@@ -10,8 +10,8 @@ This branch implements the v1 core in milestones M1–M8. It is a development de
 
 ```sh
 export PATH=/usr/local/go/bin:$PATH
-go build -trimpath -o /tmp/swsvault ./cmd/swsvault
-/tmp/swsvault version
+make build
+./bin/swsvault version
 go test ./...
 go test -race ./...
 ```
@@ -23,9 +23,9 @@ Use a temporary directory so the smoke test never touches `/etc` or `/var/lib`:
 ```sh
 export SWSV_DATA_DIR="$(mktemp -d)"
 export SWSV_LISTEN=127.0.0.1:9531
-/tmp/swsvault keygen --out "$SWSV_DATA_DIR/master.key"
-/tmp/swsvault admin init
-/tmp/swsvault serve
+./bin/swsvault keygen --out "$SWSV_DATA_DIR/master.key"
+./bin/swsvault admin init
+./bin/swsvault serve
 ```
 
 `admin init` prompts for a password twice and prints a one-time `otpauth://` enrollment URI. Register it in a TOTP app. Open `http://127.0.0.1:9531/admin/login` and sign in. Use fake development values such as `SENTINEL-VALUE-7f3a9c` when testing.
@@ -34,7 +34,7 @@ In a second terminal, point the CLI at the same temporary directory and create a
 
 ```sh
 export SWSV_DATA_DIR="/path/to/the/same/temp-dir"
-/tmp/swsvault client create --ns demo --name local-test --scopes secrets:list,secrets:write,fetch,resolve,intents:create
+./bin/swsvault client create --ns demo --name local-test --scopes secrets:list,secrets:write,fetch,resolve,intents:create
 # Copy the one-time token into a protected environment injection, not a command argument.
 read -rsp 'SWSV_TOKEN: ' SWSV_TOKEN; export SWSV_TOKEN; echo
 export SWSV_URL=http://127.0.0.1:9531
@@ -55,8 +55,8 @@ The example ID and target are placeholders; the bound host must match exactly. N
 
 - REST: `GET /v1/secrets?ns=demo` lists metadata; `POST /v1/secrets` accepts a value in the JSON request body and returns metadata only.
 - MCP: POST JSON-RPC `tools/list` to `/mcp` to discover `vault_list`, `vault_fetch`, and `vault_intent`. Tool calls reuse REST scope checks.
-- CLI capture: `printf %s 'SENTINEL-VALUE-7f3a9c' | /tmp/swsvault capture --ns demo --label fake --provider generic` reads from stdin and prints only ID/preview.
-- CLI run: `/tmp/swsvault run --env API_TOKEN=vault:demo/SECRET_ID -- command args` resolves a reference, passes the value only in the child environment, and redacts child output.
+- CLI capture: `printf %s 'SENTINEL-VALUE-7f3a9c' | ./bin/swsvault capture --ns demo --label fake --provider generic` reads from stdin and prints only ID/preview.
+- CLI run: `./bin/swsvault run --env API_TOKEN=vault:demo/SECRET_ID -- command args` resolves a reference, passes the value only in the child environment, and redacts child output.
 - Git credential: configure `swsvault git-credential` as Git's credential helper; `get` matches explicit host bindings for GitHub/Gitea credentials, while `store` and `erase` are no-ops.
 
 For endpoint and CLI details see `docs/api.md`; for provider templates see `docs/providers.md`; for the threat model see `docs/security.md`; for operational precautions see `docs/ops.md`.

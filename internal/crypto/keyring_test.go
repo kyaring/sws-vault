@@ -46,3 +46,33 @@ func TestKeyringRewrapKeepsOldValueReadable(t *testing.T) {
 		t.Fatal("new key wrap failed", e)
 	}
 }
+
+func TestLoadKeyringEnforcesMasterKeyPermissions(t *testing.T) {
+	d := t.TempDir()
+	key, err := NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(d, "master.key")
+	data := []byte(base64.RawStdEncoding.EncodeToString(key) + "\n")
+	for _, mode := range []os.FileMode{0644, 0640} {
+		if err := os.WriteFile(path, data, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadKeyringAt(path); err == nil {
+			t.Errorf("mode %04o accepted", mode)
+		}
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKeyringAt(path); err != nil {
+		t.Fatalf("0600 key rejected: %v", err)
+	}
+}

@@ -258,3 +258,37 @@ func TestKeygenRefusesOverwrite(t *testing.T) {
 		t.Fatal("existing key file changed")
 	}
 }
+
+func TestVersionTextUsesInjectedCommit(t *testing.T) {
+	old := commit
+	defer func() { commit = old }()
+	commit = "123456789abc"
+	if got := versionText(); got != "123456789abc" {
+		t.Fatalf("version=%q", got)
+	}
+}
+
+func TestServeRejectsLooseMasterKeyPermissions(t *testing.T) {
+	d := t.TempDir()
+	key, err := vaultcrypto.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(base64.RawStdEncoding.EncodeToString(key) + "\n")
+	t.Setenv("SWSV_CONFIG", "")
+	t.Setenv("SWSV_DATA_DIR", d)
+	t.Setenv("SWSV_DB_PATH", filepath.Join(d, "vault.db"))
+	t.Setenv("SWSV_MASTER_KEY_PATH", filepath.Join(d, "master.key"))
+	t.Setenv("SWSV_LISTEN", "127.0.0.1:0")
+	for _, mode := range []os.FileMode{0644, 0640} {
+		if err := os.WriteFile(filepath.Join(d, "master.key"), data, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(d, "master.key"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := serve(); err == nil {
+			t.Errorf("serve accepted master.key mode %04o", mode)
+		}
+	}
+}
