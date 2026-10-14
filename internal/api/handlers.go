@@ -90,6 +90,9 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
 	jsonOut(w, 200, m)
 }
 func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error) {
+	if q.Username != "" {
+		q.Bindings.Username = q.Username
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if id == "" {
 		var e error
@@ -218,6 +221,3 @@ func (s *Server) intent(w http.ResponseWriter, r *http.Request, c Client) {
 }
 func (s *Server) intentPage(w http.ResponseWriter, r *http.Request)   { errOut(w, 404, "not found") }
 func (s *Server) intentSubmit(w http.ResponseWriter, r *http.Request) { errOut(w, 404, "not found") }
-func (s *Server) fetch(w http.ResponseWriter, r *http.Request, c Client) {
-	errOut(w, 501, "fetch engine unavailable")
-}

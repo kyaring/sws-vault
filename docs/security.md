@@ -30,3 +30,10 @@ Plaintext is necessarily present while encrypting/decrypting in process memory. 
 ### Admin password hashing limitation
 
 The approved `golang.org/x/crypto` module is not present in the local module cache, and outbound access to `proxy.golang.org` timed out during this task. The development panel currently uses Go's standard-library PBKDF2-HMAC-SHA256 (600,000 iterations) rather than the task-required Argon2id. This is a documented deviation, not equivalent completion; do not deploy until Argon2id is available and substituted with tests. No extra dependency was introduced.
+
+### Outbound fetch decisions
+
+- The fetch engine accepts exact host bindings only. It rejects URL userinfo, unapproved schemes, unapproved hosts, metadata IPs, and private/loopback/link-local addresses unless private access is explicitly enabled (metadata IPs remain blocked).
+- DNS is resolved once per request and the transport dials the selected validated IP directly, preserving the original URL host for HTTP Host and TLS SNI. Environment proxies are disabled so they cannot bypass pinning.
+- Redirects are not followed. Caller-provided Authorization, Cookie, Host, and X-Auth-* headers are discarded before provider headers are applied. Response bodies are limited to 1 MiB and response headers/body are redacted for raw, base64, and URL-encoded forms of the injected value.
+- Generic header templates are limited to `{v}` and `{username}`. Host and header policy are explicit bindings; empty generic host bindings deny the request.

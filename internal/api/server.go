@@ -29,6 +29,7 @@ type Client struct {
 }
 type Binding struct {
 	Hosts          []string          `json:"hosts"`
+	Username       string            `json:"username,omitempty"`
 	Headers        map[string]string `json:"headers"`
 	AllowResolve   bool              `json:"allow_resolve"`
 	AllowPrivate   bool              `json:"allow_private"`
