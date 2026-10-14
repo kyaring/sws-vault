@@ -19,10 +19,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/kyaring/sws-vault/internal/api"
+	vaultcli "github.com/kyaring/sws-vault/internal/cli"
 	"github.com/kyaring/sws-vault/internal/config"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
 	"github.com/kyaring/sws-vault/internal/store"
@@ -32,6 +34,10 @@ var commit = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "swsvault:", err)
 		os.Exit(1)
 	}
@@ -42,7 +48,7 @@ func run(args []string) error {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Println(commit)
+		fmt.Println(versionText())
 		return nil
 	case "keygen":
 		return keygen(args[1:])
@@ -53,14 +59,11 @@ func run(args []string) error {
 	case "client":
 		return client(args[1:])
 	case "capture":
-		return errors.New("capture not yet available")
+		return vaultcli.Capture(args[1:])
 	case "run":
-		return errors.New("run not yet available")
+		return vaultcli.Run(args[1:])
 	case "git-credential":
-		if len(args) > 1 && (args[1] == "store" || args[1] == "erase") {
-			return nil
-		}
-		return errors.New("credential lookup not yet available")
+		return vaultcli.GitCredential(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -202,10 +205,10 @@ func readPassword(r *bufio.Reader) (string, error) {
 	st, e := os.Stdin.Stat()
 	terminal := e == nil && st.Mode()&os.ModeCharDevice != 0
 	if terminal {
-		if e = exec.Command("stty", "-echo").Run(); e != nil {
+		if e = toggleEcho(false); e != nil {
 			return "", e
 		}
-		defer exec.Command("stty", "echo").Run()
+		defer toggleEcho(true)
 	}
 	v, e := readLine(r)
 	if terminal {
@@ -282,4 +285,27 @@ func client(args []string) error {
 		raw[i] = 0
 	}
 	return nil
+}
+
+func toggleEcho(on bool) error {
+	mode := "-echo"
+	if on {
+		mode = "echo"
+	}
+	cmd := exec.Command("stty", mode)
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+func versionText() string {
+	if commit != "dev" {
+		return commit
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, v := range info.Settings {
+			if v.Key == "vcs.revision" && v.Value != "" {
+				return v.Value
+			}
+		}
+	}
+	return commit
 }

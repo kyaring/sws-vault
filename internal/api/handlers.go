@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
 	"net/http"
@@ -197,27 +196,3 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 	s.audit(c.ID, c.NS, "resolve", id, "", "ok", remoteIP(r))
 	jsonOut(w, 200, map[string]string{"value": string(v)})
 }
-func (s *Server) intent(w http.ResponseWriter, r *http.Request, c Client) {
-	raw, e := vaultcrypto.Random(32)
-	if e != nil {
-		errOut(w, 500, "internal error")
-		return
-	}
-	token := vaultcrypto.Encode(raw)
-	wipe(raw)
-	h := sha256.Sum256([]byte(token))
-	exp := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
-	_, e = s.S.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, h[:], c.NS, "new secret", exp)
-	if e != nil {
-		errOut(w, 500, "internal error")
-		return
-	}
-	base := s.C.PublicBaseURL
-	if base == "" {
-		base = "http://127.0.0.1:9531"
-	}
-	s.audit(c.ID, c.NS, "intent", "", "", "ok", remoteIP(r))
-	jsonOut(w, 201, map[string]string{"url": base + "/i/" + token, "expires_at": exp})
-}
-func (s *Server) intentPage(w http.ResponseWriter, r *http.Request)   { errOut(w, 404, "not found") }
-func (s *Server) intentSubmit(w http.ResponseWriter, r *http.Request) { errOut(w, 404, "not found") }
