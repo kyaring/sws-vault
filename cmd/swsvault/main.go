@@ -30,6 +30,7 @@ import (
 )
 
 var commit = "dev"
+var serveServer = func(s *api.Server) error { return s.Serve() }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -134,7 +135,7 @@ func serve() error {
 		return e
 	}
 	defer s.Close()
-	return api.NewWithKeyring(c, s, ring).Serve()
+	return serveServer(api.NewWithKeyring(c, s, ring))
 }
 func admin(args []string) error {
 	if len(args) == 0 {

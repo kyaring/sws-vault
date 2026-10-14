@@ -44,10 +44,10 @@ This is a draft example, not an installed unit. Review filesystem paths, user/gr
 ## Reverse proxy
 
 - Terminate TLS at a trusted proxy and keep the upstream listener private.
-- Forward `X-Forwarded-For` only from explicitly configured proxy IPs. Never trust arbitrary caller-supplied forwarding headers. The current application uses the socket peer IP and does not trust forwarding headers.
+- If deployed behind a reverse proxy, you must configure `SWSV_TRUSTED_PROXY_CIDRS` to the proxy peer CIDRs. Never trust arbitrary caller-supplied forwarding headers. Without this setting, `X-Forwarded-For` is ignored and the socket peer IP (often the proxy) is used for login lockout; this can lock out the administrator. The service emits one WARN per process if it receives this header without trusted proxy CIDRs.
 - Preserve `Cache-Control: no-store` on resolve responses; do not cache `/v1`, `/admin`, `/mcp`, or `/i` responses.
 - Do not log authorization headers, request bodies, form bodies, or response bodies. Access logs should omit query strings on one-time intent links because the path token is a bearer capability.
-- Do not enable public exposure until the admin hashing deviation is resolved and the SSRF/redaction tests pass in the release build.
+- Do not enable public exposure until the full acceptance gate passes and the actual host TLS/reverse-proxy, backup, key-custody, monitoring, and recovery procedures have been reviewed.
 
 ## Backups
 

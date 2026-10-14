@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -8,8 +10,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kyaring/sws-vault/internal/api"
+	"github.com/kyaring/sws-vault/internal/config"
+	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
+	"github.com/kyaring/sws-vault/internal/store"
 )
 
 func captureCommandIO(t *testing.T, input string, fn func() error) (string, string, error) {
@@ -98,5 +107,105 @@ func TestRedactorEncodedVariant(t *testing.T) {
 	_ = r.Flush()
 	if strings.Contains(b.String(), sentinel) || strings.Contains(b.String(), url.QueryEscape(sentinel)) {
 		t.Fatal("encoded value was not redacted")
+	}
+}
+
+func TestGitCredentialUsesResolveUsernameFromRealVaultService(t *testing.T) {
+	d := t.TempDir()
+	st, err := store.Open(filepath.Join(d, "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	key, err := vaultcrypto.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const token = "fake-git-credential-client-token"
+	digest := sha256.Sum256([]byte(token))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('demo','demo',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('cli-test','demo','cli-test',?,?,?)`, digest[:], "secrets:list,secrets:write,resolve", now); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(api.New(config.Config{DataDir: d, ListenAddr: "127.0.0.1:0"}, st, key).Handler())
+	defer srv.Close()
+	t.Setenv("SWSV_URL", srv.URL)
+	t.Setenv("SWSV_TOKEN", token)
+	t.Setenv("SWSV_NS", "demo")
+
+	create := func(label, host, username, value string) string {
+		t.Helper()
+		bindings := map[string]any{"hosts": []string{host}, "allow_resolve": true}
+		if username != "" {
+			bindings["username"] = username
+		}
+		body, err := json.Marshal(map[string]any{"ns": "demo", "label": label, "provider": "gitea-token", "type": "token", "value": value, "bindings": bindings})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/secrets", strings.NewReader(string(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var metadata struct {
+			ID       string `json:"id"`
+			Bindings struct {
+				Username string `json:"username"`
+			} `json:"bindings"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s status=%d", label, resp.StatusCode)
+		}
+		if username != "" && metadata.Bindings.Username == username {
+			t.Fatalf("create response leaked unmasked username %q", username)
+		}
+		return metadata.ID
+	}
+	const rawUser = "fake-gitea-user-42"
+	create("with-username", "gitea.example.test", rawUser, "FAKE-GITEA-TOKEN-42")
+	create("without-username", "gitea-empty.example.test", "", "FAKE-GITEA-TOKEN-EMPTY")
+
+	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/secrets?ns=demo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listBytes, err := io.ReadAll(listResp.Body)
+	_ = listResp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listResp.StatusCode != http.StatusOK || strings.Contains(string(listBytes), rawUser) || !strings.Contains(string(listBytes), "f****************2") {
+		t.Fatalf("list username masking failed: status=%d body=%s", listResp.StatusCode, listBytes)
+	}
+
+	for _, tc := range []struct{ host, username, password string }{
+		{"gitea.example.test", rawUser, "FAKE-GITEA-TOKEN-42"},
+		{"gitea-empty.example.test", "x-access-token", "FAKE-GITEA-TOKEN-EMPTY"},
+	} {
+		out, _, err := captureCommandIO(t, "protocol=https\nhost="+tc.host+"\n\n", func() error { return GitCredential([]string{"get"}) })
+		if err != nil {
+			t.Fatalf("git-credential get for %s: %v", tc.host, err)
+		}
+		if !strings.Contains(out, "username="+tc.username+"\n") || !strings.Contains(out, "password="+tc.password+"\n") {
+			t.Fatalf("git-credential output for %s incorrect: %q", tc.host, out)
+		}
 	}
 }

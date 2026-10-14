@@ -93,18 +93,24 @@ func (c Config) Request(method, path string, body any) (int, []byte, error) {
 	return resp.StatusCode, b, e
 }
 func (c Config) Resolve(ref string) (string, error) {
+	value, _, err := c.resolveWithUsername(ref)
+	return value, err
+}
+
+func (c Config) resolveWithUsername(ref string) (string, string, error) {
 	status, b, e := c.Request("POST", "/v1/resolve", map[string]string{"secret": ref})
 	if e != nil {
-		return "", e
+		return "", "", e
 	}
 	if status != 200 {
-		return "", fmt.Errorf("resolve failed with HTTP %d", status)
+		return "", "", fmt.Errorf("resolve failed with HTTP %d", status)
 	}
 	var out struct {
-		Value string `json:"value"`
+		Value    string `json:"value"`
+		Username string `json:"username"`
 	}
 	if e = json.Unmarshal(b, &out); e != nil {
-		return "", errors.New("invalid resolve response")
+		return "", "", errors.New("invalid resolve response")
 	}
-	return out.Value, nil
+	return out.Value, out.Username, nil
 }

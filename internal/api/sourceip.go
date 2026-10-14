@@ -1,12 +1,25 @@
 package api
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
+var untrustedForwardedWarning sync.Once
+
+func (s *Server) warnUntrustedForwarded(r *http.Request) {
+	if strings.TrimSpace(r.Header.Get("X-Forwarded-For")) != "" && len(s.C.TrustedProxyCIDRs) == 0 {
+		untrustedForwardedWarning.Do(func() {
+			slog.Warn("X-Forwarded-For received without SWSV_TRUSTED_PROXY_CIDRS; using socket peer IP")
+		})
+	}
+}
+
 func (s *Server) sourceIP(r *http.Request) string {
+	s.warnUntrustedForwarded(r)
 	peer := remoteIP(r)
 	if !ipAllowed(peer, s.C.TrustedProxyCIDRs) {
 		return peer

@@ -102,6 +102,7 @@ func (s *Server) routes() {
 }
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.warnUntrustedForwarded(r)
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -117,6 +118,8 @@ func constantTimeHashEqual(candidate, stored []byte) bool {
 	return subtle.ConstantTimeCompare(candidate, stored) == 1
 }
 
+var constantTimeHashEqualFn = constantTimeHashEqual
+
 func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request, Client)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -128,7 +131,7 @@ func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request
 		var c Client
 		var storedHash []byte
 		e := s.S.DB.QueryRow(`SELECT id,ns,name,scopes,cidrs,expires_at,disabled,token_hash FROM clients WHERE token_hash=?`, h[:]).Scan(&c.ID, &c.NS, &c.Name, &c.Scopes, &c.CIDRs, &c.Expires, &c.Disabled, &storedHash)
-		if e != nil || !constantTimeHashEqual(h[:], storedHash) || c.Disabled != 0 || (c.Expires != "" && time.Now().UTC().Format(time.RFC3339) >= c.Expires) {
+		if e != nil || !constantTimeHashEqualFn(h[:], storedHash) || c.Disabled != 0 || (c.Expires != "" && time.Now().UTC().Format(time.RFC3339) >= c.Expires) {
 			errOut(w, 401, "unauthorized")
 			return
 		}

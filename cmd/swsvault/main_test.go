@@ -280,6 +280,10 @@ func TestServeRejectsLooseMasterKeyPermissions(t *testing.T) {
 	t.Setenv("SWSV_DB_PATH", filepath.Join(d, "vault.db"))
 	t.Setenv("SWSV_MASTER_KEY_PATH", filepath.Join(d, "master.key"))
 	t.Setenv("SWSV_LISTEN", "127.0.0.1:0")
+	oldServeServer := serveServer
+	listenerStarted := false
+	serveServer = func(*api.Server) error { listenerStarted = true; return nil }
+	defer func() { serveServer = oldServeServer }()
 	for _, mode := range []os.FileMode{0644, 0640} {
 		if err := os.WriteFile(filepath.Join(d, "master.key"), data, mode); err != nil {
 			t.Fatal(err)
@@ -287,8 +291,16 @@ func TestServeRejectsLooseMasterKeyPermissions(t *testing.T) {
 		if err := os.Chmod(filepath.Join(d, "master.key"), mode); err != nil {
 			t.Fatal(err)
 		}
-		if err := serve(); err == nil {
-			t.Errorf("serve accepted master.key mode %04o", mode)
+		started := time.Now()
+		err := serve()
+		if time.Since(started) >= 2*time.Second {
+			t.Fatalf("serve permission rejection took too long for mode %04o", mode)
+		}
+		if err == nil {
+			t.Fatalf("serve accepted master.key mode %04o", mode)
+		}
+		if listenerStarted {
+			t.Fatalf("listener started before rejecting master.key mode %04o", mode)
 		}
 	}
 }

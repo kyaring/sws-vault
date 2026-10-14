@@ -15,7 +15,6 @@ type credentialMeta struct {
 	Provider string `json:"provider"`
 	Bindings struct {
 		Hosts        []string `json:"hosts"`
-		Username     string   `json:"username"`
 		AllowResolve bool     `json:"allow_resolve"`
 	} `json:"bindings"`
 	Status string `json:"status"`
@@ -80,11 +79,10 @@ func GitCredential(args []string) error {
 		if !matched {
 			continue
 		}
-		v, e := c.Resolve("vault:" + m.NS + "/" + m.ID)
+		v, user, e := c.resolveWithUsername("vault:" + m.NS + "/" + m.ID)
 		if e != nil {
 			return e
 		}
-		user := m.Bindings.Username
 		if user == "" {
 			user = "x-access-token"
 		}

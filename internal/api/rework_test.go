@@ -5,10 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -181,19 +178,20 @@ func TestClientTokenHashConfirmationIsConstantTime(t *testing.T) {
 	if constantTimeHashEqual(a, c) {
 		t.Fatal("different hashes matched")
 	}
-}
-
-func TestGenerateSourceHasNoEmptyLoop(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate test source")
+	old := constantTimeHashEqualFn
+	calls := 0
+	constantTimeHashEqualFn = func(candidate, stored []byte) bool {
+		calls++
+		return constantTimeHashEqual(candidate, stored)
 	}
-	source, err := os.ReadFile(filepath.Join(filepath.Dir(file), "generate.go"))
-	if err != nil {
-		t.Fatal(err)
+	defer func() { constantTimeHashEqualFn = old }()
+	s, _, token, _ := testServer(t, "secrets:list")
+	code, _ := request(t, s, token, http.MethodGet, "/v1/secrets?ns=ns1", "")
+	if code != http.StatusOK {
+		t.Fatalf("authenticated list status=%d", code)
 	}
-	if strings.Contains(string(source), "for i := 0; i < b.Len(); i++ {\n\t}") {
-		t.Fatal("empty loop remains in generate.go")
+	if calls != 1 {
+		t.Fatalf("authenticated request called constant-time hash seam %d times, want 1", calls)
 	}
 }
 

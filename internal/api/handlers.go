@@ -216,5 +216,5 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 	defer wipe(v)
 	_, _ = s.S.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	s.audit(c.ID, c.NS, "resolve", id, "", "ok", s.sourceIP(r))
-	jsonOut(w, 200, map[string]string{"value": string(v)})
+	jsonOut(w, 200, map[string]string{"value": string(v), "username": bd.Username})
 }
