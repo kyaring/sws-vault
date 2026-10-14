@@ -162,6 +162,12 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 				hosts = append(hosts, v)
 			}
 		}
+		for _, host := range hosts {
+			if !validHostBinding(host) {
+				errOut(w, 400, "invalid host binding")
+				return
+			}
+		}
 		var headers map[string]string
 		if raw := strings.TrimSpace(r.Form.Get("headers")); raw != "" {
 			if json.Unmarshal([]byte(raw), &headers) != nil {
@@ -169,7 +175,15 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		b, _ := json.Marshal(Binding{Username: strings.TrimSpace(r.Form.Get("username")), AllowedClients: splitCSV(r.Form.Get("allowed_clients")), Hosts: hosts, Headers: headers, AllowResolve: r.Form.Get("allow_resolve") == "on", AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"})
+		var existingRaw string
+		_ = s.S.DB.QueryRow(`SELECT bindings FROM secrets WHERE id=? AND status='active'`, id).Scan(&existingRaw)
+		var existing Binding
+		_ = json.Unmarshal([]byte(existingRaw), &existing)
+		username := strings.TrimSpace(r.Form.Get("username"))
+		if username == mask(existing.Username) {
+			username = existing.Username
+		}
+		b, _ := json.Marshal(Binding{Username: username, AllowedClients: splitCSV(r.Form.Get("allowed_clients")), Hosts: hosts, Headers: headers, AllowResolve: r.Form.Get("allow_resolve") == "on", AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"})
 		res, e := s.S.DB.Exec(`UPDATE secrets SET bindings=? WHERE id=? AND status='active'`, string(b), id)
 		if e != nil {
 			errOut(w, 500, "internal error")
@@ -192,7 +206,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	var bd Binding
 	_ = json.Unmarshal([]byte(b), &bd)
 	headers, _ := json.Marshal(bd.Headers)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改绑定：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": bd.Username, "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改绑定：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP})
 	_ = ns
 	_ = providerName
 }

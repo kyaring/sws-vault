@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -68,11 +69,13 @@ type Metadata struct {
 func New(c config.Config, s *store.Store, key []byte) *Server {
 	x := &Server{C: c, S: s, Master: key, Keys: map[uint32][]byte{1: key}, Current: 1, Mux: http.NewServeMux()}
 	x.routes()
+	startMemoryCleanup()
 	return x
 }
 func NewWithKeyring(c config.Config, st *store.Store, ring *vaultcrypto.Keyring) *Server {
 	x := &Server{C: c, S: st, Keys: ring.Keys, Current: ring.Current, Master: ring.Keys[ring.Current], Mux: http.NewServeMux()}
 	x.routes()
+	startMemoryCleanup()
 	return x
 }
 func (s *Server) routes() {
@@ -85,7 +88,14 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /v1/intents", s.auth("intents:create", s.intent))
 	s.Mux.HandleFunc("POST /v1/fetch", s.auth("fetch", s.fetch))
 	s.Mux.HandleFunc("/mcp", s.auth("", s.mcp))
-	s.Mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", http.FileServer(http.FS(webassets.Assets))))
+	s.Mux.HandleFunc("GET /admin/assets/{asset}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("asset") != "admin.css" || strings.Contains(r.URL.Path, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		http.StripPrefix("/admin/assets/", http.FileServer(http.FS(webassets.Assets))).ServeHTTP(w, r)
+	})
+	s.Mux.HandleFunc("GET /admin/assets/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	s.Mux.HandleFunc("/admin/", s.admin)
 	s.Mux.HandleFunc("GET /i/{token}", s.intentPage)
 	s.Mux.HandleFunc("POST /i/{token}", s.intentSubmit)
@@ -103,6 +113,10 @@ func (s *Server) Serve() error {
 	srv := &http.Server{Addr: s.C.ListenAddr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second}
 	return srv.ListenAndServe()
 }
+func constantTimeHashEqual(candidate, stored []byte) bool {
+	return subtle.ConstantTimeCompare(candidate, stored) == 1
+}
+
 func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request, Client)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -112,8 +126,9 @@ func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request
 		}
 		h := sha256.Sum256([]byte(token))
 		var c Client
-		e := s.S.DB.QueryRow(`SELECT id,ns,name,scopes,cidrs,expires_at,disabled FROM clients WHERE token_hash=?`, h[:]).Scan(&c.ID, &c.NS, &c.Name, &c.Scopes, &c.CIDRs, &c.Expires, &c.Disabled)
-		if e != nil || c.Disabled != 0 || (c.Expires != "" && time.Now().UTC().Format(time.RFC3339) >= c.Expires) {
+		var storedHash []byte
+		e := s.S.DB.QueryRow(`SELECT id,ns,name,scopes,cidrs,expires_at,disabled,token_hash FROM clients WHERE token_hash=?`, h[:]).Scan(&c.ID, &c.NS, &c.Name, &c.Scopes, &c.CIDRs, &c.Expires, &c.Disabled, &storedHash)
+		if e != nil || !constantTimeHashEqual(h[:], storedHash) || c.Disabled != 0 || (c.Expires != "" && time.Now().UTC().Format(time.RFC3339) >= c.Expires) {
 			errOut(w, 401, "unauthorized")
 			return
 		}

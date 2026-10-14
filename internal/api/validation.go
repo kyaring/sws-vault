@@ -3,8 +3,27 @@ package api
 import (
 	"errors"
 	"github.com/kyaring/sws-vault/internal/provider"
+	"net/url"
+	"strconv"
 	"strings"
 )
+
+func validHostBinding(h string) bool {
+	if h == "" || strings.ContainsAny(h, " \t\r\n/@\\") || strings.Contains(h, "%") {
+		return false
+	}
+	u, err := url.Parse("https://" + h)
+	if err != nil || u.Host != h || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	return true
+}
 
 func validateSecret(q SecretRequest) error {
 	if !namePattern.MatchString(q.NS) || strings.TrimSpace(q.Label) == "" || len(q.Label) > 128 || q.Value == "" || len(q.Value) > 1<<20 {
@@ -27,7 +46,7 @@ func validateSecret(q SecretRequest) error {
 		}
 	}
 	for _, h := range q.Bindings.Hosts {
-		if strings.TrimSpace(h) == "" || strings.ContainsAny(h, " \t\r\n/@") {
+		if !validHostBinding(strings.TrimSpace(h)) {
 			return errors.New("invalid host binding")
 		}
 	}

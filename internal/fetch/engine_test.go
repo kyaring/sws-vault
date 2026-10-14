@@ -41,12 +41,15 @@ func TestFetchPinsIPDropsAuthAndRedacts(t *testing.T) {
 		if r.Header.Get("Cookie") != "" {
 			t.Errorf("caller cookie was forwarded")
 		}
+		if r.Header.Get("X-Auth-Token") != "" {
+			t.Errorf("caller X-Auth-* header was forwarded")
+		}
 		w.Header().Set("X-Echo", r.Header.Get("X-Api-Key"))
 		_, _ = w.Write([]byte(r.Header.Get("X-Api-Key") + " " + base64.StdEncoding.EncodeToString([]byte(sentinel))))
 	}))
 	defer srv.Close()
 	e := Engine{Resolver: fixedResolver{net.ParseIP("127.0.0.1")}}
-	caller := http.Header{"Authorization": []string{"Bearer caller"}, "Cookie": []string{"session=bad"}, "X-Api-Key": []string{"caller"}}
+	caller := http.Header{"Authorization": []string{"Bearer caller"}, "Cookie": []string{"session=bad"}, "X-Api-Key": []string{"caller"}, "X-Auth-Token": []string{"caller-secret"}}
 	inject := http.Header{"Authorization": []string{"Bearer injected"}, "X-Api-Key": []string{sentinel}}
 	resp, err := e.Do(context.Background(), testURL(srv), "GET", []string{testHost(srv)}, true, true, caller, inject, nil, sentinel)
 	if err != nil {
@@ -100,5 +103,38 @@ func TestFetchUsesPinnedAddressAfterDNSChanges(t *testing.T) {
 	}
 	if resolver.calls.Load() != 1 {
 		t.Fatalf("DNS resolved %d times", resolver.calls.Load())
+	}
+}
+
+func TestFetchSSRFBoundaryVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name, target string
+		allowed      []string
+		resolved     net.IP
+		allowPrivate bool
+	}{
+		{"userinfo", "https://user:pass@example.test/", []string{"example.test"}, net.ParseIP("203.0.113.9"), false},
+		{"ipv6-loopback", "https://[::1]/", []string{"[::1]"}, net.ParseIP("::1"), false},
+		{"ipv6-ula", "https://[fd00::1]/", []string{"[fd00::1]"}, net.ParseIP("fd00::1"), false},
+		{"decimal-loopback", "https://2130706433/", []string{"2130706433"}, net.ParseIP("127.0.0.1"), false},
+		{"metadata", "http://169.254.169.254/", []string{"169.254.169.254"}, net.ParseIP("169.254.169.254"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Engine{Resolver: fixedResolver{tc.resolved}}
+			if _, err := e.Do(context.Background(), tc.target, "GET", tc.allowed, tc.allowPrivate, true, nil, nil, nil, ""); err == nil {
+				t.Fatalf("unsafe target accepted: %s", tc.target)
+			}
+		})
+	}
+	upper, _ := url.Parse("https://EXAMPLE.TEST/")
+	if !hostAllowed(upper, []string{"example.test"}) {
+		t.Fatal("host case normalization failed")
+	}
+	trailing, _ := url.Parse("https://example.test./")
+	if hostAllowed(trailing, []string{"example.test"}) {
+		t.Fatal("trailing-dot hostname bypassed exact allowlist")
+	}
+	if !hostAllowed(trailing, []string{"example.test."}) {
+		t.Fatal("exact trailing-dot allowlist entry rejected")
 	}
 }

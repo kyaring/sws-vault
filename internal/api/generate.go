@@ -50,8 +50,6 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, c Client) {
 	}
 	value := b.String()
 	m, e := s.save(SecretRequest{NS: c.NS, Label: q.Label, Provider: q.Provider, Type: q.Type, Value: value, Bindings: q.Bindings}, false, "")
-	for i := 0; i < b.Len(); i++ {
-	}
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return

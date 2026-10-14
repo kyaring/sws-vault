@@ -33,6 +33,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, c Client) {
 			return
 		}
 		_ = json.Unmarshal([]byte(b), &m.Bindings)
+		m.Bindings.Username = mask(m.Bindings.Username)
 		out = append(out, m)
 	}
 	s.audit(c.ID, c.NS, "list", "", "", "ok", s.sourceIP(r))
@@ -149,7 +150,9 @@ func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error)
 	if e != nil {
 		return Metadata{}, e
 	}
-	return Metadata{ID: id, NS: q.NS, Label: q.Label, Provider: q.Provider, Type: q.Type, Preview: preview, Fingerprint: fp, Bindings: q.Bindings, CreatedAt: now, RotatedAt: now, Status: "active"}, nil
+	publicBindings := q.Bindings
+	publicBindings.Username = mask(publicBindings.Username)
+	return Metadata{ID: id, NS: q.NS, Label: q.Label, Provider: q.Provider, Type: q.Type, Preview: preview, Fingerprint: fp, Bindings: publicBindings, CreatedAt: now, RotatedAt: now, Status: "active"}, nil
 }
 func mask(v string) string {
 	if v == "" {
@@ -161,6 +164,7 @@ func mask(v string) string {
 	return v[:1] + strings.Repeat("*", len(v)-2) + v[len(v)-1:]
 }
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
+	w.Header().Set("Cache-Control", "no-store")
 	var q struct {
 		Secret string `json:"secret"`
 	}
@@ -210,7 +214,6 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	defer wipe(v)
-	w.Header().Set("Cache-Control", "no-store")
 	_, _ = s.S.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	s.audit(c.ID, c.NS, "resolve", id, "", "ok", s.sourceIP(r))
 	jsonOut(w, 200, map[string]string{"value": string(v)})

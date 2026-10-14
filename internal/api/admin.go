@@ -26,6 +26,73 @@ var sessions = struct {
 	m map[string]adminSession
 }{m: map[string]adminSession{}}
 
+type loginAttempt struct {
+	failures          int
+	lockedUntil, last time.Time
+}
+
+var loginAttempts = struct {
+	sync.Mutex
+	m map[string]loginAttempt
+}{m: map[string]loginAttempt{}}
+var memoryCleanupOnce sync.Once
+var loginBackoff = struct {
+	sync.Mutex
+	failures int
+	last     time.Time
+}{}
+
+func globalLoginBackoff(now time.Time) time.Duration {
+	loginBackoff.Lock()
+	defer loginBackoff.Unlock()
+	if now.Sub(loginBackoff.last) > 15*time.Minute {
+		loginBackoff.failures = 0
+	}
+	loginBackoff.failures++
+	loginBackoff.last = now
+	delays := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+	idx := loginBackoff.failures - 1
+	if idx >= len(delays) {
+		idx = len(delays) - 1
+	}
+	return delays[idx]
+}
+
+func startMemoryCleanup() {
+	memoryCleanupOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				cleanupMemoryState(now)
+			}
+		}()
+	})
+}
+func cleanupMemoryState(now time.Time) {
+	sessions.Lock()
+	for token, v := range sessions.m {
+		if now.Sub(v.last) > 15*time.Minute || now.Sub(v.created) >= 8*time.Hour {
+			delete(sessions.m, token)
+		}
+	}
+	sessions.Unlock()
+	rateState.Lock()
+	for id, v := range rateState.m {
+		if now.Sub(v.last) > 2*time.Minute {
+			delete(rateState.m, id)
+		}
+	}
+	rateState.Unlock()
+	loginAttempts.Lock()
+	for ip, v := range loginAttempts.m {
+		if now.Sub(v.last) > 15*time.Minute && !now.Before(v.lockedUntil) {
+			delete(loginAttempts.m, ip)
+		}
+	}
+	loginAttempts.Unlock()
+}
+
 func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin/login" {
 		s.adminLogin(w, r)
@@ -99,6 +166,12 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v item
 		if rows.Scan(&v.ID, &v.NS, &v.Label, &v.Provider, &v.Type, &v.Preview, &v.Fingerprint, &v.Status, &v.Bindings, &v.LastUsed) == nil {
+			var bd Binding
+			if json.Unmarshal([]byte(v.Bindings), &bd) == nil {
+				bd.Username = mask(bd.Username)
+				safe, _ := json.Marshal(bd)
+				v.Bindings = string(safe)
+			}
 			items = append(items, v)
 		}
 	}
@@ -133,7 +206,9 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		errOut(w, 403, "csrf rejected")
 		return
 	}
-	if s.loginLocked() {
+	_, _ = s.S.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT "",last_totp_step INTEGER NOT NULL DEFAULT -1)`)
+	ip := s.sourceIP(r)
+	if s.loginLocked(ip) {
 		s.audit("admin", "", "login", "", "", "locked", s.sourceIP(r))
 		errOut(w, 429, "login temporarily locked")
 		return
@@ -141,14 +216,14 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	var stored, salt, secret []byte
 	e = s.S.DB.QueryRow(`SELECT password_hash,password_salt,totp_secret FROM admins WHERE id=1`).Scan(&stored, &salt, &secret)
 	if e != nil {
-		s.loginFailure()
+		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
 		errOut(w, 401, "invalid credentials")
 		return
 	}
 	got, e := auth.HashPassword(r.Form.Get("password"), salt)
 	if e != nil || subtle.ConstantTimeCompare(got, stored) != 1 {
-		s.loginFailure()
+		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
 		errOut(w, 401, "invalid credentials")
 		return
@@ -157,11 +232,14 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	_ = s.S.DB.QueryRow(`SELECT last_totp_step FROM admin_state WHERE id=1`).Scan(&last)
 	step, ok := auth.VerifyTOTP(secret, r.Form.Get("totp"), time.Now(), last)
 	if !ok {
-		s.loginFailure()
+		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
 		errOut(w, 401, "invalid credentials")
 		return
 	}
+	loginAttempts.Lock()
+	delete(loginAttempts.m, ip)
+	loginAttempts.Unlock()
 	_, _ = s.S.DB.Exec(`INSERT INTO admin_state(id,failed_count,locked_until,last_totp_step) VALUES(1,0,'',?) ON CONFLICT(id) DO UPDATE SET failed_count=0,locked_until='',last_totp_step=excluded.last_totp_step`, step)
 	token := make([]byte, 32)
 	if _, e = rand.Read(token); e != nil {
@@ -179,25 +257,34 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "sws_admin", Value: raw, Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.C.PublicBaseURL, "https://"), MaxAge: 28800})
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
-func (s *Server) loginLocked() bool {
-	_, _ = s.S.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT '',last_totp_step INTEGER NOT NULL DEFAULT -1)`)
-	var until string
-	e := s.S.DB.QueryRow(`SELECT locked_until FROM admin_state WHERE id=1`).Scan(&until)
-	if e != nil {
-		return false
+func (s *Server) loginLocked(ip string) bool {
+	now := time.Now()
+	cleanupMemoryState(now)
+	loginAttempts.Lock()
+	defer loginAttempts.Unlock()
+	a := loginAttempts.m[ip]
+	if !now.Before(a.lockedUntil) {
+		a.lockedUntil = time.Time{}
+		if a.failures >= 5 {
+			a.failures = 0
+		}
 	}
-	t, e := time.Parse(time.RFC3339, until)
-	return e == nil && time.Now().Before(t)
+	a.last = now
+	loginAttempts.m[ip] = a
+	return now.Before(a.lockedUntil)
 }
-func (s *Server) loginFailure() {
-	_, _ = s.S.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT '',last_totp_step INTEGER NOT NULL DEFAULT -1)`)
-	_, _ = s.S.DB.Exec(`INSERT INTO admin_state(id,failed_count,locked_until,last_totp_step) VALUES(1,1,'',-1) ON CONFLICT(id) DO UPDATE SET failed_count=failed_count+1,locked_until=CASE WHEN failed_count+1>=5 THEN ? ELSE locked_until END`, time.Now().Add(15*time.Minute).UTC().Format(time.RFC3339))
-	var count int
-	_ = s.S.DB.QueryRow(`SELECT failed_count FROM admin_state WHERE id=1`).Scan(&count)
-	delays := []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second}
-	if count > 0 && count <= len(delays) {
-		time.Sleep(delays[count-1])
+func (s *Server) loginFailure(ip string) {
+	now := time.Now()
+	loginAttempts.Lock()
+	a := loginAttempts.m[ip]
+	a.failures++
+	a.last = now
+	if a.failures >= 5 {
+		a.lockedUntil = now.Add(15 * time.Minute)
 	}
+	loginAttempts.m[ip] = a
+	loginAttempts.Unlock()
+	time.Sleep(globalLoginBackoff(now))
 }
 func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) (adminSession, bool) {
 	ck, e := r.Cookie("sws_admin")

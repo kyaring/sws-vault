@@ -19,6 +19,12 @@ func testServer(t *testing.T, scopes string) (*Server, *store.Store, string, str
 	rateState.Lock()
 	delete(rateState.m, "c1")
 	rateState.Unlock()
+	loginAttempts.Lock()
+	loginAttempts.m = map[string]loginAttempt{}
+	loginAttempts.Unlock()
+	sessions.Lock()
+	sessions.m = map[string]adminSession{}
+	sessions.Unlock()
 	d := t.TempDir()
 	s, e := store.Open(filepath.Join(d, "vault.db"))
 	if e != nil {
