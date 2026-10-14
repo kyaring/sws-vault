@@ -101,20 +101,16 @@ func serve() error {
 	if st.Mode().Perm()&0077 != 0 {
 		return errors.New("master key permissions must be 0600 or stricter")
 	}
-	raw, e := os.ReadFile(p)
+	ring, e := vaultcrypto.LoadKeyring(c.DataDir)
 	if e != nil {
 		return e
-	}
-	key, e := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if e != nil || len(key) != 32 {
-		return errors.New("invalid master key file")
 	}
 	s, e := store.Open(filepath.Join(c.DataDir, "vault.db"))
 	if e != nil {
 		return e
 	}
 	defer s.Close()
-	return api.New(c, s, key).Serve()
+	return api.NewWithKeyring(c, s, ring).Serve()
 }
 func admin(args []string) error {
 	if len(args) == 0 || (args[0] != "init" && args[0] != "reset-totp") {

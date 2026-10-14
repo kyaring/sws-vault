@@ -16,10 +16,12 @@ import (
 )
 
 type Server struct {
-	C      config.Config
-	S      *store.Store
-	Master []byte
-	Mux    *http.ServeMux
+	C       config.Config
+	S       *store.Store
+	Master  []byte
+	Keys    map[uint32][]byte
+	Current uint32
+	Mux     *http.ServeMux
 }
 type Client struct {
 	ID, NS, Name, Scopes, CIDRs, Expires string
@@ -58,7 +60,12 @@ type Metadata struct {
 }
 
 func New(c config.Config, s *store.Store, key []byte) *Server {
-	x := &Server{C: c, S: s, Master: key, Mux: http.NewServeMux()}
+	x := &Server{C: c, S: s, Master: key, Keys: map[uint32][]byte{1: key}, Current: 1, Mux: http.NewServeMux()}
+	x.routes()
+	return x
+}
+func NewWithKeyring(c config.Config, st *store.Store, ring *vaultcrypto.Keyring) *Server {
+	x := &Server{C: c, S: st, Keys: ring.Keys, Current: ring.Current, Master: ring.Keys[ring.Current], Mux: http.NewServeMux()}
 	x.routes()
 	return x
 }

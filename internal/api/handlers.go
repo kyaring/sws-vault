@@ -107,7 +107,7 @@ func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error)
 	if e != nil {
 		return Metadata{}, e
 	}
-	wrapped, e := vaultcrypto.Seal(s.Master, dek, []byte(q.NS+"/"+id+"/dek"))
+	wrapped, e := vaultcrypto.Seal(s.Keys[s.Current], dek, []byte(q.NS+"/"+id+"/dek"))
 	if e != nil {
 		return Metadata{}, e
 	}
@@ -127,16 +127,16 @@ func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error)
 	if len(preview) > 80 {
 		preview = preview[:80]
 	}
-	fp := vaultcrypto.Fingerprint(s.Master, []byte(q.Value))
+	fp := vaultcrypto.Fingerprint(s.Keys[s.Current], []byte(q.Value))
 	bb, _ := json.Marshal(q.Bindings)
 	_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, q.NS, q.NS, now)
 	if e != nil {
 		return Metadata{}, e
 	}
 	if rotate {
-		_, e = s.S.DB.Exec(`UPDATE secrets SET ciphertext=?,dek_wrapped=?,key_version=1,preview=?,fingerprint=?,bindings=?,rotated_at=? WHERE id=?`, ct, wrapped, preview, fp, string(bb), now, id)
+		_, e = s.S.DB.Exec(`UPDATE secrets SET ciphertext=?,dek_wrapped=?,key_version=?,preview=?,fingerprint=?,bindings=?,rotated_at=? WHERE id=?`, ct, wrapped, s.Current, preview, fp, string(bb), now, id)
 	} else {
-		_, e = s.S.DB.Exec(`INSERT INTO secrets(id,ns,label,provider,type,ciphertext,dek_wrapped,key_version,preview,fingerprint,bindings,created_at,rotated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, q.NS, q.Label, q.Provider, q.Type, ct, wrapped, 1, preview, fp, string(bb), now, now)
+		_, e = s.S.DB.Exec(`INSERT INTO secrets(id,ns,label,provider,type,ciphertext,dek_wrapped,key_version,preview,fingerprint,bindings,created_at,rotated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, q.NS, q.Label, q.Provider, q.Type, ct, wrapped, s.Current, preview, fp, string(bb), now, now)
 	}
 	if e != nil {
 		return Metadata{}, e
@@ -167,7 +167,8 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 	}
 	var typ, status, b string
 	var ct, wrapped []byte
-	e := s.S.DB.QueryRow(`SELECT type,status,ciphertext,dek_wrapped,bindings FROM secrets WHERE ns=? AND id=?`, ns, id).Scan(&typ, &status, &ct, &wrapped, &b)
+	var kv int
+	e := s.S.DB.QueryRow(`SELECT type,status,ciphertext,dek_wrapped,key_version,bindings FROM secrets WHERE ns=? AND id=?`, ns, id).Scan(&typ, &status, &ct, &wrapped, &kv, &b)
 	if e != nil || status != "active" {
 		errOut(w, 404, "not found")
 		return
@@ -177,7 +178,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 403, "forbidden")
 		return
 	}
-	dek, e := vaultcrypto.Open(s.Master, wrapped, []byte(ns+"/"+id+"/dek"))
+	dek, e := vaultcrypto.Open(s.Keys[uint32(kv)], wrapped, []byte(ns+"/"+id+"/dek"))
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
