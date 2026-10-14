@@ -117,6 +117,10 @@ func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request
 			errOut(w, 403, "forbidden")
 			return
 		}
+		if !allowRate(c.ID) {
+			errOut(w, 429, "rate limit exceeded")
+			return
+		}
 		next(w, r, c)
 	}
 }

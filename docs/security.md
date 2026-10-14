@@ -19,3 +19,10 @@ The process, operating-system administrator, and any process explicitly given a 
 ## Plaintext boundaries
 
 Plaintext is necessarily present while encrypting/decrypting in process memory. The intended v1 boundaries are the explicit resolve response, the child-process environment for `run`, and the injected outbound request header for `fetch`. These boundaries must be restricted by scope, binding, audit, and redaction. No list, admin page, log, or audit event may contain the value.
+
+### Authentication and audit decisions
+
+- Client credentials use a 32-byte cryptographically random token encoded as unpadded base64url and prefixed `swsv_`; only the SHA-256 digest is persisted. Creation is a local root-only CLI operation and prints the token once.
+- Scopes are comma-separated and checked before dispatch. Namespace mismatches are intentionally indistinguishable from missing records. CIDR allowlists parse the socket peer address; forwarding headers are not trusted by the current listener.
+- The in-process token bucket defaults to 60 requests per client per minute. It resets on restart and is not a distributed limiter; deployments must keep a single process until a shared limiter is designed.
+- Audit events are structured fields only. No request bodies, authorization headers, or credential values are copied into audit records.

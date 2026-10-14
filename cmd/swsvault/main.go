@@ -3,14 +3,19 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kyaring/sws-vault/internal/api"
 	"github.com/kyaring/sws-vault/internal/config"
@@ -147,8 +152,65 @@ func readLine(r *bufio.Reader) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 func client(args []string) error {
-	if len(args) > 0 && args[0] == "create" {
-		return errors.New("client create not yet available")
+	if len(args) == 0 || args[0] != "create" {
+		return errors.New("usage: client create --ns X --name Y --scopes secrets:list,fetch")
 	}
-	return errors.New("usage: client create")
+	if os.Geteuid() != 0 {
+		return errors.New("client create is restricted to root")
+	}
+	fs := flag.NewFlagSet("client create", flag.ContinueOnError)
+	ns := fs.String("ns", "", "namespace")
+	name := fs.String("name", "", "client name")
+	scopes := fs.String("scopes", "", "comma-separated scopes")
+	cidrs := fs.String("cidrs", "", "optional CIDR allowlist")
+	expires := fs.String("expires", "", "optional RFC3339 expiry")
+	if e := fs.Parse(args[1:]); e != nil {
+		return e
+	}
+	if *ns == "" || *name == "" || *scopes == "" {
+		return errors.New("ns, name, and scopes are required")
+	}
+	allowed := map[string]bool{"secrets:list": true, "secrets:write": true, "fetch": true, "resolve": true, "intents:create": true}
+	for _, v := range strings.Split(*scopes, ",") {
+		if !allowed[strings.TrimSpace(v)] {
+			return fmt.Errorf("invalid scope %q", v)
+		}
+	}
+	if *expires != "" {
+		if _, e := time.Parse(time.RFC3339, *expires); e != nil {
+			return errors.New("expiry must be RFC3339")
+		}
+	}
+	c, e := config.Load()
+	if e != nil {
+		return e
+	}
+	db, e := sql.Open("sqlite", filepath.Join(c.DataDir, "vault.db"))
+	if e != nil {
+		return e
+	}
+	defer db.Close()
+	raw := make([]byte, 32)
+	if _, e = rand.Read(raw); e != nil {
+		return e
+	}
+	token := "swsv_" + base64.RawURLEncoding.EncodeToString(raw)
+	h := sha256.Sum256([]byte(token))
+	idb := make([]byte, 16)
+	if _, e = rand.Read(idb); e != nil {
+		return e
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, e = db.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(idb), *ns, now); e != nil {
+		return e
+	}
+	_, e = db.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,cidrs,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)`, hex.EncodeToString(idb), *ns, *name, h[:], *scopes, *cidrs, *expires, now)
+	if e != nil {
+		return e
+	}
+	fmt.Println(token)
+	for i := range raw {
+		raw[i] = 0
+	}
+	return nil
 }
