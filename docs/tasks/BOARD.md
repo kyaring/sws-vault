@@ -7,3 +7,4 @@
 | SV-20261015-02 | 返工：v1 审核意见整改（1 阻塞，3 一般，另有建议升级为必改） | GPT | changes-requested | 05:56 RikkaHub-1 复审 CHANGES REQUESTED（被审提交 4ab69e8a1000）；报告 docs/reviews/SV-20261015-02-review.md | 2026-10-15 05:56 |
 | RV-SV-20261015-02 | 审核 SV-02 返工（4ab69e8） | RikkaHub-1 | verified（Hark 06:10 终签，同意 CHANGES REQUESTED，问题 2 升级为阻塞） | Hark 05:48 派发；05:56 完成，结论 CHANGES REQUESTED，报告 docs/reviews/SV-20261015-02-review.md | 2026-10-15 05:56 |
 | SV-20261015-03 | 返工 R2：恢复 api.md、修 git-credential 用户名回归、ops 矛盾句、两条测试改为行为测试 | GPT | verified（Hark 07:05 终签 @7468820；验收第 1 条属卡面缺陷，按本轮增量 4ab69e8..7468820 核：13 文件 / +342，均在允许范围内） | 06:56 RikkaHub-1 复审 CHANGES REQUESTED（被审提交 74688206b5a5；6 条必改全部满足，卡面验收第 1 条按字面不可满足需裁定）；报告 docs/reviews/SV-20261015-03-review.md | 2026-10-15 06:56 |
+| SV-v1-leftovers | SV-03 遗留 3 条建议（v1 合并后开卡） | GPT | backlog | 见 SV-20261015-03.md 勘误 | 2026-10-15 07:35 |
