@@ -20,7 +20,6 @@ Send `Authorization: Bearer <client-token>`. The token is stored as a SHA-256 di
 | `POST /v1/resolve` | `resolve` plus binding `allow_resolve` | The sole REST endpoint that intentionally returns plaintext |
 | `POST /v1/fetch` | `fetch` | Resolves a bound value, injects provider headers into one pinned outbound request, and redacts response headers/body |
 | `POST /v1/intents` | `intents:create` | Creates a ten-minute, one-use entry URL; stores only the token hash |
-
 | `POST /mcp` | per-tool scope | Streamable HTTP JSON-RPC MCP endpoint |
 
 A secret reference has the form `vault:<namespace>/<id>`. The metadata response contains `id`, `ns`, `label`, `provider`, `type`, `preview`, `fingerprint`, `status`, timestamps, and bindings. It never contains ciphertext, wrapped DEKs, key material, or the plaintext value.
@@ -147,3 +146,39 @@ When the admin panel's “保存前验证” option is enabled, SWS Vault sends 
 - 主机名大小写会规范化后按精确 allowlist 匹配；尾点主机名只有 allowlist 也显式带尾点时才匹配。userinfo、IPv6 loopback/ULA、解析到 loopback 的十进制 IP 和云 metadata IP 均按当前策略拒绝。
 - 管理员登录锁定以 sourceIP 为键；只有配置的可信代理来源才会读取 X-Forwarded-For。全局退避最多 1 秒，不会对其他 IP 施加硬锁。
 - 本次仅开发和测试；没有部署，没有修改 /etc 或 /var/lib，没有 GitHub push，也没有合并回 main。部署前仍须按实际环境复核 TLS/反向代理、备份、密钥托管、监控和恢复流程。
+
+### SV-03 — 第二轮审核整改报告
+
+- 任务卡：`docs/tasks/SV-20261015-03.md`（main `96442d9`）；依据 RikkaHub-1 的 `SV-20261015-02-review.md`。开始前已将 main 合入 `feat/v1-core`；没有合并回 main、没有推送或部署。
+- 实现提交：`1a2058ba9e3bea30c4db985394927a932a20de94`（`SV-03: restore API docs and fix credential resolution`）。本报告由后续 SV-03 报告提交补入本节。
+- 恢复 `docs/api.md`：以 SV-01 的 `7f877b5` API/CLI 文档为基础，补回 SV-02 的 `make build`/版本注入和绑定校验 400 行为，并在本节统一保留 SV-01、SV-02、SV-03 三份交付报告。
+- 修复 git-credential 回归：resolve 在原有 `resolve` scope 与 `allow_resolve=true` 门禁内同时返回原文 `value` 和绑定 `username`；helper 使用 resolve 的 username，空值回退 `x-access-token`。list、管理面板、MCP 列表仍然打码。
+- 删除 `docs/ops.md` 中的 admin hashing deviation 矛盾句；`grep -n deviation docs/ops.md` 无输出。ops/security 均说明反代部署必须设置 `SWSV_TRUSTED_PROXY_CIDRS`，未配置却收到 `X-Forwarded-For` 时忽略该头并每进程只发一次 WARN。
+- 主密钥权限检查仍在打开数据库及调用监听器之前完成。测试通过可替换的 `serveServer` 接缝断言非法权限时监听器未启动，并在 2 秒内返回断言结果。
+- 常数时间比较测试不再只测试比较函数：`constantTimeHashEqualFn` 是可替换调用接缝，测试发起真实认证请求并断言调用点确实使用该接缝。删除了基于源码字符串的 `TestGenerateSourceHasNoEmptyLoop`。
+
+#### 新增/更新的关键测试
+
+| 整改 | 测试 |
+|---|---|
+| resolve 返回绑定 username，且列表继续打码；helper 空用户名回退 | `TestGitCredentialUsesResolveUsernameFromRealVaultService` |
+| 常数时间比较调用点 | `TestClientTokenHashConfirmationIsConstantTime` |
+| 主密钥权限在监听前拒绝，且快速返回 | `TestServeRejectsLooseMasterKeyPermissions` |
+| 未配置可信代理时忽略 XFF 并只告警一次 | `TestUntrustedForwardedForWarnsOnceAndUsesPeerIP` |
+| 原有 resolve 权限与 no-store 门禁保持不变 | `TestResolveRequiresAllowResolveAndNoStore` |
+
+#### 三项反向验证
+
+1. **问题 2：** 临时把 helper 改回从 list 读取 username，真实服务测试按预期失败，输出被打码的 `username=f****************2`，而不是 `fake-gitea-user-42`。
+2. **问题 4：** 临时把鉴权调用点换成普通字符串比较，`TestClientTokenHashConfirmationIsConstantTime` 按预期失败：`authenticated request called constant-time hash seam 0 times, want 1`。
+3. **问题 5：** 临时关闭 main 与 keyring 两处权限守卫，`TestServeRejectsLooseMasterKeyPermissions` 在 `-timeout 2s` 下立即以断言失败（`serve accepted master.key mode 0644`），没有依赖测试超时。
+
+所有故意变异都已还原，未提交错误代码。
+
+#### 验收与冒烟
+
+- `go test -count=1 ./...`、`go vet ./...`、gofmt、`git diff --check`：通过。
+- `TestGitCredentialUsesResolveUsernameFromRealVaultService` 使用真实的 `httptest.NewServer(api.New(...))`，录入假 Gitea token；原始 username 输出正确、无绑定时输出 `x-access-token`，list 响应中 username 仍然打码。
+- README 冷启动冒烟在临时目录完成 keygen、admin init、client create、serve、healthz、write、list、resolve；实际执行 `./bin/swsvault git-credential get` 验证原文用户名和空用户名回退均通过。
+- 代码提交上的构建版本实测为 `1a2058ba9e3b`，与当时的 `git rev-parse --short=12 HEAD` 完全一致；最终报告提交后的版本核对和 README 冷烟也在最终提交上重新运行并通过。
+- 未部署、未推送 GitHub、未合并回 main。反代生产部署前仍须按实际代理地址配置 `SWSV_TRUSTED_PROXY_CIDRS`。
