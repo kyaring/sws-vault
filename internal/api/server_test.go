@@ -51,12 +51,12 @@ func TestSentinelNeverListedOrAudited(t *testing.T) {
 	s, st, token, d := testServer(t, "secrets:write,secrets:list,resolve")
 	sentinel := "SENTINEL-VALUE-7f3a9c"
 	body := `{"ns":"ns1","label":"fake","provider":"generic","type":"token","value":"` + sentinel + `","bindings":{"allow_resolve":true}}`
-	code, _ := request(t, s, token, "POST", "/v1/secrets", body)
-	if code != 201 {
+	code, createOut := request(t, s, token, "POST", "/v1/secrets", body)
+	if code != 201 || containsSentinel(createOut, sentinel) {
 		t.Fatalf("create status %d", code)
 	}
 	code, out := request(t, s, token, "GET", "/v1/secrets?ns=ns1", "")
-	if code != 200 || strings.Contains(out, sentinel) {
+	if code != 200 || containsSentinel(out, sentinel) {
 		t.Fatalf("list exposed sentinel: status %d", code)
 	}
 	var m map[string]any
@@ -64,10 +64,10 @@ func TestSentinelNeverListedOrAudited(t *testing.T) {
 		t.Fatal("invalid list response")
 	}
 	var audit string
-	if e := st.DB.QueryRow(`SELECT group_concat(action || result,' ') FROM audit`).Scan(&audit); e != nil {
+	if e := st.DB.QueryRow(`SELECT group_concat(at || actor || ns || secret_id || action || target_host || result || source_ip,' ') FROM audit`).Scan(&audit); e != nil {
 		t.Fatal(e)
 	}
-	if strings.Contains(audit, sentinel) {
+	if containsSentinel(audit, sentinel) {
 		t.Fatal("audit exposed sentinel")
 	}
 	if e := st.Close(); e != nil {
@@ -75,7 +75,7 @@ func TestSentinelNeverListedOrAudited(t *testing.T) {
 	}
 	for _, name := range []string{"vault.db", "vault.db-wal", "vault.db-shm"} {
 		b, e := os.ReadFile(filepath.Join(d, name))
-		if e == nil && strings.Contains(string(b), sentinel) {
+		if e == nil && containsSentinel(string(b), sentinel) {
 			t.Fatalf("database artifact %s contains plaintext sentinel", name)
 		}
 	}

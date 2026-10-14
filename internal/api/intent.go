@@ -35,10 +35,7 @@ func (s *Server) intent(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	base := s.C.PublicBaseURL
-	if base == "" {
-		base = "http://127.0.0.1:9531"
-	}
-	s.audit(c.ID, c.NS, "intent", "", "", "ok", remoteIP(r))
+	s.audit(c.ID, c.NS, "intent", "", "", "ok", s.sourceIP(r))
 	jsonOut(w, 201, map[string]string{"url": base + "/i/" + token, "expires_at": exp})
 }
 func (s *Server) intentPage(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +115,7 @@ func (s *Server) intentSubmit(w http.ResponseWriter, r *http.Request) {
 		errOut(w, 500, "internal error")
 		return
 	}
-	s.audit("intent", ns, "write", m.ID, "", "ok", remoteIP(r))
+	s.audit("intent", ns, "write", m.ID, "", "ok", s.sourceIP(r))
 	w.Header().Set("Cache-Control", "no-store")
 	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>录入完成</title><p>录入成功。凭据值不会再次显示。</p></html>`, nil)
 }

@@ -12,13 +12,18 @@ import (
 )
 
 type Keyring struct {
-	Current uint32
-	Keys    map[uint32][]byte
+	Current  uint32
+	Keys     map[uint32][]byte
+	BasePath string
 }
 
 func LoadKeyring(dir string) (*Keyring, error) {
-	r := &Keyring{Keys: map[uint32][]byte{}}
-	base := filepath.Join(dir, "master.key")
+	return LoadKeyringAt(filepath.Join(dir, "master.key"))
+}
+func LoadKeyringAt(base string) (*Keyring, error) {
+	r := &Keyring{Keys: map[uint32][]byte{}, BasePath: base}
+	dir := filepath.Dir(base)
+	bn := filepath.Base(base)
 	paths := []string{base}
 	entries, e := os.ReadDir(dir)
 	if e != nil {
@@ -26,8 +31,9 @@ func LoadKeyring(dir string) (*Keyring, error) {
 	}
 	for _, ent := range entries {
 		n := ent.Name()
-		if strings.HasPrefix(n, "master.key.v") {
-			v, er := strconv.ParseUint(strings.TrimPrefix(n, "master.key.v"), 10, 32)
+		prefix := bn + ".v"
+		if strings.HasPrefix(n, prefix) {
+			v, er := strconv.ParseUint(strings.TrimPrefix(n, prefix), 10, 32)
 			if er == nil && v > 1 {
 				paths = append(paths, filepath.Join(dir, n))
 			}
@@ -37,8 +43,7 @@ func LoadKeyring(dir string) (*Keyring, error) {
 	for _, p := range paths {
 		v := uint32(1)
 		if p != base {
-			n := strings.TrimPrefix(filepath.Base(p), "master.key.v")
-			u, er := strconv.ParseUint(n, 10, 32)
+			u, er := strconv.ParseUint(strings.TrimPrefix(filepath.Base(p), bn+".v"), 10, 32)
 			if er != nil || u < 2 {
 				continue
 			}
@@ -55,11 +60,11 @@ func LoadKeyring(dir string) (*Keyring, error) {
 		if er != nil {
 			return nil, er
 		}
-		key, er := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-		if er != nil || len(key) != KeySize {
+		k, er := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+		if er != nil || len(k) != KeySize {
 			return nil, fmt.Errorf("invalid key file: %s", filepath.Base(p))
 		}
-		r.Keys[v] = key
+		r.Keys[v] = k
 		if v > r.Current {
 			r.Current = v
 		}
@@ -78,7 +83,11 @@ func (r *Keyring) Rotate(dir string) (uint32, error) {
 	if e != nil {
 		return 0, e
 	}
-	p := filepath.Join(dir, fmt.Sprintf("master.key.v%d", next))
+	base := r.BasePath
+	if base == "" {
+		base = filepath.Join(dir, "master.key")
+	}
+	p := fmt.Sprintf("%s.v%d", base, next)
 	f, e := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if e != nil {
 		wipe(k)
@@ -98,19 +107,23 @@ func (r *Keyring) Rotate(dir string) (uint32, error) {
 	r.Current = next
 	return next, nil
 }
-func (r *Keyring) Wrap(version uint32, dek []byte, aad []byte) ([]byte, error) {
+func (r *Keyring) Wrap(version uint32, dek, aad []byte) ([]byte, error) {
 	k := r.Keys[version]
-	if len(k) != KeySize {
-		return nil, errors.New("unknown key version")
+	derived, e := DeriveKey(k, "kek-wrap")
+	if e != nil {
+		return nil, e
 	}
-	return Seal(k, dek, aad)
+	defer wipe(derived)
+	return Seal(derived, dek, aad)
 }
 func (r *Keyring) Unwrap(version uint32, wrapped, aad []byte) ([]byte, error) {
 	k := r.Keys[version]
-	if len(k) != KeySize {
-		return nil, errors.New("unknown key version")
+	derived, e := DeriveKey(k, "kek-wrap")
+	if e != nil {
+		return nil, e
 	}
-	return Open(k, wrapped, aad)
+	defer wipe(derived)
+	return Open(derived, wrapped, aad)
 }
 func wipe(b []byte) {
 	for i := range b {

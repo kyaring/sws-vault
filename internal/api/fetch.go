@@ -3,10 +3,10 @@ package api
 import (
 	"encoding/json"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
-	fetchengine "github.com/kyaring/sws-vault/internal/fetch"
 	"github.com/kyaring/sws-vault/internal/provider"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type fetchRequest struct {
@@ -53,13 +53,13 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request, c Client) {
 			return
 		}
 	}
-	dek, e := vaultcrypto.Open(s.Keys[uint32(version)], wrapped, []byte(ns+"/"+id+"/dek"))
+	dek, e := s.unwrapDEK(ns, id, uint32(version), wrapped)
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
 	}
 	defer wipe(dek)
-	value, e := vaultcrypto.Open(dek, ct, []byte(ns+"/"+id+"/"+typ))
+	value, e := vaultcrypto.Open(dek, ct, vaultcrypto.SecretAAD(ns, id, typ, uint32(version)))
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
@@ -78,16 +78,17 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request, c Client) {
 	for k, v := range q.Headers {
 		caller.Set(k, v)
 	}
-	resp, e := (fetchengine.Engine{}).Do(r.Context(), q.URL, q.Method, hosts, bd.AllowPrivate, bd.AllowHTTP, caller, injected, []byte(q.Body), string(value))
+	resp, e := (s.FetchEngine).Do(r.Context(), q.URL, q.Method, hosts, bd.AllowPrivate, bd.AllowHTTP, caller, injected, []byte(q.Body), string(value))
 	host := ""
 	if u, pe := url.Parse(q.URL); pe == nil {
 		host = u.Host
 	}
 	if e != nil {
-		s.audit(c.ID, c.NS, "fetch", id, host, "rejected", remoteIP(r))
+		s.audit(c.ID, c.NS, "fetch", id, host, "rejected", s.sourceIP(r))
 		errOut(w, 400, "target rejected by fetch policy")
 		return
 	}
-	s.audit(c.ID, c.NS, "fetch", id, host, "ok", remoteIP(r))
+	_, _ = s.S.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	s.audit(c.ID, c.NS, "fetch", id, host, "ok", s.sourceIP(r))
 	jsonOut(w, 200, resp)
 }

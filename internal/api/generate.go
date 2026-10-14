@@ -56,6 +56,6 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 500, "internal error")
 		return
 	}
-	s.audit(c.ID, c.NS, "generate", m.ID, "", "ok", remoteIP(r))
+	s.audit(c.ID, c.NS, "generate", m.ID, "", "ok", s.sourceIP(r))
 	jsonOut(w, 201, m)
 }

@@ -28,7 +28,7 @@ func LoadConfig(args []string) (Config, []string, error) {
 			if e != nil {
 				return Config{}, nil, e
 			}
-			if st.Mode().Perm()&0077 != 0 {
+			if st.Mode().Perm() != 0600 {
 				return Config{}, nil, errors.New("env file permissions must be 0600 or stricter")
 			}
 			b, e := os.ReadFile(p)

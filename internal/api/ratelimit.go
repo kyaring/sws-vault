@@ -15,17 +15,20 @@ var rateState = struct {
 	m map[string]bucket
 }{m: map[string]bucket{}}
 
-func allowRate(id string) bool {
+func allowRate(id string, limit int) bool {
+	if limit < 1 {
+		limit = 60
+	}
 	now := time.Now()
 	rateState.Lock()
 	defer rateState.Unlock()
 	b, ok := rateState.m[id]
 	if !ok {
-		b = bucket{tokens: 60, last: now}
+		b = bucket{tokens: float64(limit), last: now}
 	}
-	b.tokens += now.Sub(b.last).Seconds()
-	if b.tokens > 60 {
-		b.tokens = 60
+	b.tokens += now.Sub(b.last).Seconds() * float64(limit) / 60
+	if b.tokens > float64(limit) {
+		b.tokens = float64(limit)
 	}
 	b.last = now
 	if b.tokens < 1 {

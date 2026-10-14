@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -14,6 +16,15 @@ type fixedResolver struct{ ip net.IP }
 
 func (f fixedResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
 	return []net.IPAddr{{IP: f.ip}}, nil
+}
+
+type changingResolver struct{ calls atomic.Int32 }
+
+func (r *changingResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	if r.calls.Add(1) == 1 {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	return []net.IPAddr{{IP: net.ParseIP("203.0.113.9")}}, nil
 }
 func testURL(s *httptest.Server) string {
 	return strings.Replace(s.URL, "127.0.0.1", "example.test", 1)
@@ -31,7 +42,7 @@ func TestFetchPinsIPDropsAuthAndRedacts(t *testing.T) {
 			t.Errorf("caller cookie was forwarded")
 		}
 		w.Header().Set("X-Echo", r.Header.Get("X-Api-Key"))
-		w.Write([]byte(r.Header.Get("X-Api-Key") + " " + base64.StdEncoding.EncodeToString([]byte(sentinel))))
+		_, _ = w.Write([]byte(r.Header.Get("X-Api-Key") + " " + base64.StdEncoding.EncodeToString([]byte(sentinel))))
 	}))
 	defer srv.Close()
 	e := Engine{Resolver: fixedResolver{net.ParseIP("127.0.0.1")}}
@@ -41,7 +52,7 @@ func TestFetchPinsIPDropsAuthAndRedacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(resp.Body, sentinel) || strings.Contains(resp.Body, base64.StdEncoding.EncodeToString([]byte(sentinel))) || strings.Contains(strings.Join(resp.Headers["X-Echo"], ""), sentinel) {
+	if strings.Contains(resp.Body, sentinel) || strings.Contains(resp.Body, base64.StdEncoding.EncodeToString([]byte(sentinel))) || strings.Contains(resp.Body, url.QueryEscape(sentinel)) || strings.Contains(resp.Body, url.PathEscape(sentinel)) || strings.Contains(strings.Join(resp.Headers["X-Echo"], ""), sentinel) {
 		t.Fatal("response exposed injected value")
 	}
 }
@@ -64,7 +75,7 @@ func TestFetchDoesNotFollowRedirectAndCapsBody(t *testing.T) {
 			http.Redirect(w, r, "/next", 302)
 			return
 		}
-		w.Write([]byte(strings.Repeat("x", MaxResponseBytes+10)))
+		_, _ = w.Write([]byte(strings.Repeat("x", MaxResponseBytes+10)))
 	}))
 	defer srv.Close()
 	e := Engine{Resolver: fixedResolver{net.ParseIP("127.0.0.1")}}
@@ -76,5 +87,18 @@ func TestFetchDoesNotFollowRedirectAndCapsBody(t *testing.T) {
 	r, err = e.Do(context.Background(), base+"/body", "GET", []string{testHost(srv)}, true, true, nil, nil, nil, "")
 	if err != nil || !r.Truncated || len(r.Body) != MaxResponseBytes {
 		t.Fatalf("body cap failed: %d %v", len(r.Body), err)
+	}
+}
+func TestFetchUsesPinnedAddressAfterDNSChanges(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	defer srv.Close()
+	resolver := &changingResolver{}
+	e := Engine{Resolver: resolver}
+	resp, err := e.Do(context.Background(), testURL(srv), "GET", []string{testHost(srv)}, true, true, nil, nil, nil, "")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("pinned fetch failed: %v", err)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("DNS resolved %d times", resolver.calls.Load())
 	}
 }

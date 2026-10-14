@@ -1,63 +1,88 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
 )
 
-// RotateKEK creates a new versioned master key and transactionally re-wraps every DEK.
-// Old key files are intentionally retained so interrupted migrations remain recoverable.
 func (s *Store) RotateKEK(r *vaultcrypto.Keyring, dir string) error {
-	if _, err := r.Rotate(dir); err != nil {
-		return err
+	if _, e := r.Rotate(dir); e != nil {
+		return e
 	}
-	tx, err := s.DB.Begin()
-	if err != nil {
-		return err
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return e
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT id,ns,dek_wrapped,key_version FROM secrets`)
-	if err != nil {
-		return err
+	rows, e := tx.Query(`SELECT id,ns,type,ciphertext,dek_wrapped,key_version FROM secrets`)
+	if e != nil {
+		return e
 	}
 	type row struct {
-		id, ns  string
-		wrapped []byte
-		version uint32
+		id, ns, typ string
+		ct, wrapped []byte
+		version     uint32
 	}
 	var all []row
 	for rows.Next() {
 		var v row
-		if err = rows.Scan(&v.id, &v.ns, &v.wrapped, &v.version); err != nil {
+		if e = rows.Scan(&v.id, &v.ns, &v.typ, &v.ct, &v.wrapped, &v.version); e != nil {
 			rows.Close()
-			return err
+			return e
 		}
 		all = append(all, v)
 	}
-	if err = rows.Err(); err != nil {
+	if e = rows.Err(); e != nil {
 		rows.Close()
-		return err
+		return e
 	}
 	rows.Close()
 	for _, v := range all {
-		aad := []byte(v.ns + "/" + v.id + "/dek")
-		dek, e := r.Unwrap(v.version, v.wrapped, aad)
+		dek, e := r.Unwrap(v.version, v.wrapped, vaultcrypto.DEKAAD(v.ns, v.id, v.version))
 		if e != nil {
 			return fmt.Errorf("unwrap DEK for %s: %w", v.id, e)
 		}
-		wrapped, e := r.Wrap(r.Current, dek, aad)
+		plain, e := vaultcrypto.Open(dek, v.ct, vaultcrypto.SecretAAD(v.ns, v.id, v.typ, v.version))
+		if e != nil {
+			for i := range dek {
+				dek[i] = 0
+			}
+			return fmt.Errorf("decrypt secret for %s: %w", v.id, e)
+		}
+		newCT, e := vaultcrypto.Seal(dek, plain, vaultcrypto.SecretAAD(v.ns, v.id, v.typ, r.Current))
+		fpKey, fe := vaultcrypto.DeriveKey(r.Keys[r.Current], "fingerprint")
+		if fe != nil {
+			for i := range plain {
+				plain[i] = 0
+			}
+			for i := range dek {
+				dek[i] = 0
+			}
+			return fe
+		}
+		fp := vaultcrypto.Fingerprint(fpKey, plain)
+		for i := range fpKey {
+			fpKey[i] = 0
+		}
+		for i := range plain {
+			plain[i] = 0
+		}
+		if e != nil {
+			for i := range dek {
+				dek[i] = 0
+			}
+			return e
+		}
+		newWrapped, e := r.Wrap(r.Current, dek, vaultcrypto.DEKAAD(v.ns, v.id, r.Current))
 		for i := range dek {
 			dek[i] = 0
 		}
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(`UPDATE secrets SET dek_wrapped=?,key_version=? WHERE id=?`, wrapped, r.Current, v.id); e != nil {
+		if _, e = tx.Exec(`UPDATE secrets SET ciphertext=?,dek_wrapped=?,key_version=?,fingerprint=? WHERE id=?`, newCT, newWrapped, r.Current, fp, v.id); e != nil {
 			return e
 		}
 	}
 	return tx.Commit()
 }
-
-var _ *sql.DB

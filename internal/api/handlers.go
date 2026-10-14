@@ -35,7 +35,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, c Client) {
 		_ = json.Unmarshal([]byte(b), &m.Bindings)
 		out = append(out, m)
 	}
-	s.audit(c.ID, c.NS, "list", "", "", "ok", remoteIP(r))
+	s.audit(c.ID, c.NS, "list", "", "", "ok", s.sourceIP(r))
 	jsonOut(w, 200, map[string]any{"secrets": out})
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request, c Client) {
@@ -60,7 +60,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 500, "internal error")
 		return
 	}
-	s.audit(c.ID, c.NS, "write", m.ID, "", "ok", remoteIP(r))
+	s.audit(c.ID, c.NS, "write", m.ID, "", "ok", s.sourceIP(r))
 	jsonOut(w, 201, m)
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
@@ -85,10 +85,13 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 500, "internal error")
 		return
 	}
-	s.audit(c.ID, c.NS, "rotate", id, "", "ok", remoteIP(r))
+	s.audit(c.ID, c.NS, "rotate", id, "", "ok", s.sourceIP(r))
 	jsonOut(w, 200, m)
 }
 func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error) {
+	if err := validateSecret(q); err != nil {
+		return Metadata{}, err
+	}
 	if q.Username != "" {
 		q.Bindings.Username = q.Username
 	}
@@ -105,11 +108,11 @@ func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error)
 		return Metadata{}, e
 	}
 	defer wipe(dek)
-	ct, e := vaultcrypto.Seal(dek, []byte(q.Value), []byte(q.NS+"/"+id+"/"+q.Type))
+	ct, e := vaultcrypto.Seal(dek, []byte(q.Value), vaultcrypto.SecretAAD(q.NS, id, q.Type, s.Current))
 	if e != nil {
 		return Metadata{}, e
 	}
-	wrapped, e := vaultcrypto.Seal(s.Keys[s.Current], dek, []byte(q.NS+"/"+id+"/dek"))
+	wrapped, e := s.wrapDEK(q.NS, id, s.Current, dek)
 	if e != nil {
 		return Metadata{}, e
 	}
@@ -129,7 +132,10 @@ func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error)
 	if len(preview) > 80 {
 		preview = preview[:80]
 	}
-	fp := vaultcrypto.Fingerprint(s.Keys[s.Current], []byte(q.Value))
+	fp, e := s.fingerprint([]byte(q.Value))
+	if e != nil {
+		return Metadata{}, e
+	}
 	bb, _ := json.Marshal(q.Bindings)
 	_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, q.NS, q.NS, now)
 	if e != nil {
@@ -180,19 +186,32 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 403, "forbidden")
 		return
 	}
-	dek, e := vaultcrypto.Open(s.Keys[uint32(kv)], wrapped, []byte(ns+"/"+id+"/dek"))
+	if len(bd.AllowedClients) > 0 {
+		allowed := false
+		for _, clientID := range bd.AllowedClients {
+			if clientID == c.ID {
+				allowed = true
+			}
+		}
+		if !allowed {
+			errOut(w, 403, "forbidden")
+			return
+		}
+	}
+	dek, e := s.unwrapDEK(ns, id, uint32(kv), wrapped)
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
 	}
 	defer wipe(dek)
-	v, e := vaultcrypto.Open(dek, ct, []byte(ns+"/"+id+"/"+typ))
+	v, e := vaultcrypto.Open(dek, ct, vaultcrypto.SecretAAD(ns, id, typ, uint32(kv)))
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
 	}
 	defer wipe(v)
 	w.Header().Set("Cache-Control", "no-store")
-	s.audit(c.ID, c.NS, "resolve", id, "", "ok", remoteIP(r))
+	_, _ = s.S.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	s.audit(c.ID, c.NS, "resolve", id, "", "ok", s.sourceIP(r))
 	jsonOut(w, 200, map[string]string{"value": string(v)})
 }

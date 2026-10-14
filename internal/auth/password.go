@@ -1,12 +1,12 @@
 package auth
 
-import (
-	"crypto/pbkdf2"
-	"crypto/sha256"
-)
+import "golang.org/x/crypto/argon2"
 
-const PasswordIterations = 600000
+const Argon2Time uint32 = 3
+const Argon2Memory uint32 = 64 * 1024
+const Argon2Threads uint8 = 2
+const PasswordKeyLen uint32 = 32
 
 func HashPassword(password string, salt []byte) ([]byte, error) {
-	return pbkdf2.Key(sha256.New, password, salt, PasswordIterations, 32)
+	return argon2.IDKey([]byte(password), salt, Argon2Time, Argon2Memory, Argon2Threads, PasswordKeyLen), nil
 }

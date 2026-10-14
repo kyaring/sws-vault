@@ -6,9 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	auditlog "github.com/kyaring/sws-vault/internal/audit"
 	"github.com/kyaring/sws-vault/internal/config"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
+	fetchengine "github.com/kyaring/sws-vault/internal/fetch"
 	"github.com/kyaring/sws-vault/internal/store"
+	webassets "github.com/kyaring/sws-vault/web"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -16,12 +20,13 @@ import (
 )
 
 type Server struct {
-	C       config.Config
-	S       *store.Store
-	Master  []byte
-	Keys    map[uint32][]byte
-	Current uint32
-	Mux     *http.ServeMux
+	C           config.Config
+	S           *store.Store
+	Master      []byte
+	Keys        map[uint32][]byte
+	Current     uint32
+	FetchEngine fetchengine.Engine
+	Mux         *http.ServeMux
 }
 type Client struct {
 	ID, NS, Name, Scopes, CIDRs, Expires string
@@ -80,6 +85,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /v1/intents", s.auth("intents:create", s.intent))
 	s.Mux.HandleFunc("POST /v1/fetch", s.auth("fetch", s.fetch))
 	s.Mux.HandleFunc("/mcp", s.auth("", s.mcp))
+	s.Mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", http.FileServer(http.FS(webassets.Assets))))
 	s.Mux.HandleFunc("/admin/", s.admin)
 	s.Mux.HandleFunc("GET /i/{token}", s.intentPage)
 	s.Mux.HandleFunc("POST /i/{token}", s.intentSubmit)
@@ -115,11 +121,11 @@ func (s *Server) auth(scope string, next func(http.ResponseWriter, *http.Request
 			errOut(w, 403, "forbidden")
 			return
 		}
-		if c.CIDRs != "" && !ipAllowed(remoteIP(r), strings.Split(c.CIDRs, ",")) {
+		if c.CIDRs != "" && !ipAllowed(s.sourceIP(r), strings.Split(c.CIDRs, ",")) {
 			errOut(w, 403, "forbidden")
 			return
 		}
-		if !allowRate(c.ID) {
+		if !allowRate(c.ID, s.C.RateLimitPerMinute) {
 			errOut(w, 429, "rate limit exceeded")
 			return
 		}
@@ -158,7 +164,7 @@ func decode(r *http.Request, v any) error {
 	if r.Body == nil {
 		return fmt.Errorf("empty body")
 	}
-	return json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(v)
+	return json.NewDecoder(io.LimitReader(r.Body, (1<<20)+1)).Decode(v)
 }
 func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -169,7 +175,7 @@ func errOut(w http.ResponseWriter, status int, msg string) {
 	jsonOut(w, status, map[string]string{"error": msg})
 }
 func (s *Server) audit(actor, ns, action, id, host, result, ip string) {
-	_, _ = s.S.DB.Exec(`INSERT INTO audit(at,actor,ns,secret_id,action,target_host,result,source_ip) VALUES(?,?,?,?,?,?,?,?)`, time.Now().UTC().Format(time.RFC3339Nano), actor, ns, id, action, host, result, ip)
+	_ = auditlog.Insert(s.S.DB, auditlog.Event{Actor: actor, NS: ns, SecretID: id, Action: action, TargetHost: host, Result: result, SourceIP: ip})
 }
 func wipe(b []byte) {
 	for i := range b {

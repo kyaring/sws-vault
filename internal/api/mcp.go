@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	mcpservice "github.com/kyaring/sws-vault/internal/mcp"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,14 +29,14 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request, c Client) {
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 	case "tools/list":
-		jsonOut(w, 200, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"tools": []any{map[string]any{"name": "vault_list", "description": "List secret metadata", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"ns": map[string]string{"type": "string"}}}}, map[string]any{"name": "vault_fetch", "description": "Fetch a bound remote resource", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"secret": map[string]string{"type": "string"}, "url": map[string]string{"type": "string"}}}}, map[string]any{"name": "vault_intent", "description": "Create one-time entry intent", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]string{"type": "string"}}}}}}})
+		jsonOut(w, 200, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"tools": mcpservice.Tools()}})
 	case "tools/call":
-		s.mcpCall(w, id, q, c)
+		s.mcpCall(w, id, q, c, r)
 	default:
 		jsonOut(w, 200, map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32601, "message": "method not found"}})
 	}
 }
-func (s *Server) mcpCall(w http.ResponseWriter, id any, q map[string]any, c Client) {
+func (s *Server) mcpCall(w http.ResponseWriter, id any, q map[string]any, c Client, original *http.Request) {
 	p, _ := q["params"].(map[string]any)
 	name, _ := p["name"].(string)
 	args, _ := p["arguments"].(map[string]any)
@@ -67,7 +68,10 @@ func (s *Server) mcpCall(w http.ResponseWriter, id any, q map[string]any, c Clie
 		return
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:12345"
+	req.RemoteAddr = original.RemoteAddr
+	if xff := original.Header.Get("X-Forwarded-For"); xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
 	rr := httptest.NewRecorder()
 	switch name {
 	case "vault_list":

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -43,6 +42,11 @@ func main() {
 	}
 }
 func run(args []string) error {
+	var ce error
+	args, ce = extractConfigFlag(args)
+	if ce != nil {
+		return ce
+	}
 	if len(args) == 0 {
 		return errors.New("usage: swsvault <serve|keygen|admin|client|run|capture|git-credential|version>")
 	}
@@ -70,9 +74,16 @@ func run(args []string) error {
 }
 func keygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
-	path := fs.String("out", "master.key", "key file path")
+	path := fs.String("out", "", "key file path")
 	if e := fs.Parse(args); e != nil {
 		return e
+	}
+	c, e := config.Load()
+	if e != nil {
+		return e
+	}
+	if *path == "" {
+		*path = c.MasterKeyPath
 	}
 	if _, e := os.Lstat(*path); e == nil {
 		return errors.New("key file already exists")
@@ -106,7 +117,7 @@ func serve() error {
 	if e = os.MkdirAll(c.DataDir, 0700); e != nil {
 		return e
 	}
-	p := filepath.Join(c.DataDir, "master.key")
+	p := c.MasterKeyPath
 	st, e := os.Stat(p)
 	if e != nil {
 		return fmt.Errorf("master key unavailable: %w", e)
@@ -114,11 +125,11 @@ func serve() error {
 	if st.Mode().Perm()&0077 != 0 {
 		return errors.New("master key permissions must be 0600 or stricter")
 	}
-	ring, e := vaultcrypto.LoadKeyring(c.DataDir)
+	ring, e := vaultcrypto.LoadKeyringAt(c.MasterKeyPath)
 	if e != nil {
 		return e
 	}
-	s, e := store.Open(filepath.Join(c.DataDir, "vault.db"))
+	s, e := store.Open(c.DBPath)
 	if e != nil {
 		return e
 	}
@@ -126,17 +137,26 @@ func serve() error {
 	return api.NewWithKeyring(c, s, ring).Serve()
 }
 func admin(args []string) error {
-	if len(args) == 0 || (args[0] != "init" && args[0] != "reset-totp") {
-		return errors.New("usage: admin init|reset-totp")
+	if len(args) == 0 {
+		return errors.New("usage: admin init|reset-totp|rotate-kek")
 	}
-	return adminInit(args[0] == "reset-totp")
+	switch args[0] {
+	case "init":
+		return adminInit(false)
+	case "reset-totp":
+		return adminInit(true)
+	case "rotate-kek":
+		return adminRotateKEK()
+	default:
+		return errors.New("usage: admin init|reset-totp|rotate-kek")
+	}
 }
 func adminInit(reset bool) error {
 	c, e := config.Load()
 	if e != nil {
 		return e
 	}
-	st, e := store.Open(filepath.Join(c.DataDir, "vault.db"))
+	st, e := store.Open(c.DBPath)
 	if e != nil {
 		return e
 	}
@@ -156,7 +176,7 @@ func adminInit(reset bool) error {
 		return e
 	}
 	if reset {
-		got, e := pbkdf2.Key(sha256.New, a, oldSalt, 600000, 32)
+		got, e := auth.HashPassword(a, oldSalt)
 		if e != nil || subtle.ConstantTimeCompare(got, oldHash) != 1 {
 			return errors.New("密码验证失败")
 		}
@@ -182,7 +202,7 @@ func adminInit(reset bool) error {
 		if _, e = rand.Read(salt); e != nil {
 			return e
 		}
-		hash, e := pbkdf2.Key(sha256.New, a, salt, 600000, 32)
+		hash, e := auth.HashPassword(a, salt)
 		if e != nil {
 			return e
 		}
@@ -192,10 +212,15 @@ func adminInit(reset bool) error {
 		return e
 	}
 	_, _ = st.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT '',last_totp_step INTEGER NOT NULL DEFAULT -1)`)
-	fmt.Fprintln(os.Stdout, "otpauth://totp/"+url.QueryEscape("SWS Vault:admin")+"?secret="+encoded+"&issuer=SWS%20Vault&digits=6&period=30")
-	for i := range []byte(a) {
-		_ = i
+	action := "admin-init"
+	if reset {
+		action = "totp-reset"
 	}
+	_, _ = st.DB.Exec(`INSERT INTO audit(at,actor,action,result,source_ip) VALUES(?,?,?,?,?)`, now, "admin", action, "ok", "local")
+	if reset {
+		_, _ = st.DB.Exec(`UPDATE admin_state SET failed_count=0,locked_until='',last_totp_step=-1 WHERE id=1`)
+	}
+	fmt.Fprintln(os.Stdout, "otpauth://totp/"+url.QueryEscape("SWS Vault:admin")+"?secret="+encoded+"&issuer=SWS%20Vault&digits=6&period=30")
 	for i := range secret {
 		secret[i] = 0
 	}
@@ -257,7 +282,7 @@ func client(args []string) error {
 	if e != nil {
 		return e
 	}
-	db, e := sql.Open("sqlite", filepath.Join(c.DataDir, "vault.db"))
+	db, e := sql.Open("sqlite", c.DBPath)
 	if e != nil {
 		return e
 	}
@@ -280,6 +305,7 @@ func client(args []string) error {
 	if e != nil {
 		return e
 	}
+	_, _ = db.Exec(`INSERT INTO audit(at,actor,ns,action,result,source_ip) VALUES(?,?,?,?,?,?)`, now, "admin", *ns, "client-create", "ok", "local")
 	fmt.Println(token)
 	for i := range raw {
 		raw[i] = 0
@@ -308,4 +334,69 @@ func versionText() string {
 		}
 	}
 	return commit
+}
+
+func adminRotateKEK() error {
+	if os.Geteuid() != 0 {
+		return errors.New("rotate-kek is restricted to root")
+	}
+	c, e := config.Load()
+	if e != nil {
+		return e
+	}
+	ring, e := vaultcrypto.LoadKeyringAt(c.MasterKeyPath)
+	if e != nil {
+		return e
+	}
+	st, e := store.Open(c.DBPath)
+	if e != nil {
+		return e
+	}
+	defer st.Close()
+	if e = st.RotateKEK(ring, filepath.Dir(c.MasterKeyPath)); e != nil {
+		return e
+	}
+	_, _ = st.DB.Exec(`INSERT INTO audit(at,actor,action,result,source_ip) VALUES(?,?,?,?,?)`, time.Now().UTC().Format(time.RFC3339), "admin", "key-rotate", "ok", "local")
+	fmt.Printf("master key version rotated to %d\n", ring.Current)
+	return nil
+}
+
+func extractConfigFlag(args []string) ([]string, error) {
+	out := []string{}
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if args[i] == "--config" {
+			if i+1 >= len(args) {
+				return nil, errors.New("--config requires a path")
+			}
+			if e := os.Setenv("SWSV_CONFIG", args[i+1]); e != nil {
+				return nil, e
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], "--config=") {
+			if e := os.Setenv("SWSV_CONFIG", strings.TrimPrefix(args[i], "--config=")); e != nil {
+				return nil, e
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out, nil
+}
+
+func validIdentifier(v string) bool {
+	if len(v) < 1 || len(v) > 64 {
+		return false
+	}
+	for _, r := range v {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }

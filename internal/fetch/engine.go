@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -19,7 +20,11 @@ const RequestTimeout = 15 * time.Second
 type Resolver interface {
 	LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
 }
-type Engine struct{ Resolver Resolver }
+type Engine struct {
+	Resolver        Resolver
+	DialContext     func(context.Context, string, string) (net.Conn, error)
+	TLSClientConfig *tls.Config
+}
 type Response struct {
 	StatusCode int                 `json:"status_code"`
 	Headers    map[string][]string `json:"headers"`
@@ -118,7 +123,10 @@ func (e Engine) Do(ctx context.Context, target, method string, allowed []string,
 			port = "80"
 		}
 	}
-	tr := &http.Transport{Proxy: nil, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second, DisableKeepAlives: true, DialContext: func(c context.Context, n, a string) (net.Conn, error) {
+	tr := &http.Transport{Proxy: nil, TLSHandshakeTimeout: 5 * time.Second, TLSClientConfig: e.TLSClientConfig, ResponseHeaderTimeout: 10 * time.Second, DisableKeepAlives: true, DialContext: func(c context.Context, n, a string) (net.Conn, error) {
+		if e.DialContext != nil {
+			return e.DialContext(c, n, a)
+		}
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(c, n, net.JoinHostPort(pin.String(), port))
 	}}
 	defer tr.CloseIdleConnections()

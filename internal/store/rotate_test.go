@@ -28,12 +28,12 @@ func TestRotateKEKRewrapsStoredDEK(t *testing.T) {
 		t.Fatal(e)
 	}
 	dek, _ := vaultcrypto.NewKey()
-	aad := []byte("ns/secret/dek")
-	wrapped, e := ring.Wrap(1, dek, aad)
+	oldAAD := vaultcrypto.DEKAAD("ns", "secret", 1)
+	wrapped, e := ring.Wrap(1, dek, oldAAD)
 	if e != nil {
 		t.Fatal(e)
 	}
-	ct, e := vaultcrypto.Seal(dek, []byte("SENTINEL-VALUE-7f3a9c"), []byte("ns/secret/token"))
+	ct, e := vaultcrypto.Seal(dek, []byte("SENTINEL-VALUE-7f3a9c"), vaultcrypto.SecretAAD("ns", "secret", "token", 1))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -44,16 +44,17 @@ func TestRotateKEKRewrapsStoredDEK(t *testing.T) {
 	if e = s.RotateKEK(ring, d); e != nil {
 		t.Fatal(e)
 	}
-	var newWrapped []byte
+	var newWrapped, newCT []byte
 	var version uint32
-	if e = s.DB.QueryRow(`SELECT dek_wrapped,key_version FROM secrets WHERE id='secret'`).Scan(&newWrapped, &version); e != nil {
+	if e = s.DB.QueryRow(`SELECT dek_wrapped,ciphertext,key_version FROM secrets WHERE id='secret'`).Scan(&newWrapped, &newCT, &version); e != nil {
 		t.Fatal(e)
 	}
+	aad := vaultcrypto.DEKAAD("ns", "secret", version)
 	got, e := ring.Unwrap(version, newWrapped, aad)
 	if e != nil || string(got) != string(dek) {
 		t.Fatalf("rotated key unreadable: %v", e)
 	}
-	plain, e := vaultcrypto.Open(got, ct, []byte("ns/secret/token"))
+	plain, e := vaultcrypto.Open(got, newCT, vaultcrypto.SecretAAD("ns", "secret", "token", version))
 	if e != nil || string(plain) != "SENTINEL-VALUE-7f3a9c" {
 		t.Fatalf("secret changed after rotation: %v", e)
 	}
