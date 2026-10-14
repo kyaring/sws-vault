@@ -124,3 +124,17 @@ func TestRateLimitAndCIDR(t *testing.T) {
 		t.Fatalf("disabled client status %d", code)
 	}
 }
+func TestGenerateReturnsMetadataOnly(t *testing.T) {
+	s, _, token, _ := testServer(t, "secrets:write,secrets:list")
+	code, out := request(t, s, token, "POST", "/v1/generate", `{"label":"generated","provider":"generic","type":"token","length":24}`)
+	if code != 201 {
+		t.Fatalf("generate status %d: %s", code, out)
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(out), &m) != nil {
+		t.Fatal("invalid metadata response")
+	}
+	if _, ok := m["value"]; ok {
+		t.Fatal("generated response contains value field")
+	}
+}

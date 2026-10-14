@@ -73,6 +73,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { jsonOut(w, 200, map[string]string{"status": "ok"}) })
 	s.Mux.HandleFunc("GET /v1/secrets", s.auth("secrets:list", s.list))
 	s.Mux.HandleFunc("POST /v1/secrets", s.auth("secrets:write", s.create))
+	s.Mux.HandleFunc("POST /v1/generate", s.auth("secrets:write", s.generate))
 	s.Mux.HandleFunc("PUT /v1/secrets/{id}/value", s.auth("secrets:write", s.rotate))
 	s.Mux.HandleFunc("POST /v1/resolve", s.auth("resolve", s.resolve))
 	s.Mux.HandleFunc("POST /v1/intents", s.auth("intents:create", s.intent))
