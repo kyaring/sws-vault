@@ -2,17 +2,22 @@ package main
 
 import (
 	"bufio"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/kyaring/sws-vault/internal/auth"
 	"io"
 	_ "modernc.org/sqlite"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -121,28 +126,92 @@ func admin(args []string) error {
 	if len(args) == 0 || (args[0] != "init" && args[0] != "reset-totp") {
 		return errors.New("usage: admin init|reset-totp")
 	}
-	return adminInit()
+	return adminInit(args[0] == "reset-totp")
 }
-func adminInit() error {
+func adminInit(reset bool) error {
+	c, e := config.Load()
+	if e != nil {
+		return e
+	}
+	st, e := store.Open(filepath.Join(c.DataDir, "vault.db"))
+	if e != nil {
+		return e
+	}
+	defer st.Close()
+	var oldHash, oldSalt []byte
+	found := st.DB.QueryRow(`SELECT password_hash,password_salt FROM admins WHERE id=1`).Scan(&oldHash, &oldSalt) == nil
+	if found && !reset {
+		return errors.New("admin already initialized")
+	}
+	if !found && reset {
+		return errors.New("admin not initialized")
+	}
 	r := bufio.NewReader(os.Stdin)
-	fmt.Fprint(os.Stderr, "密码（至少 12 字符）: ")
-	a, e := readLine(r)
+	fmt.Fprint(os.Stderr, "管理员密码（至少 12 字符）: ")
+	a, e := readPassword(r)
 	if e != nil {
 		return e
 	}
-	fmt.Fprint(os.Stderr, "再次输入密码: ")
-	b, e := readLine(r)
+	if reset {
+		got, e := pbkdf2.Key(sha256.New, a, oldSalt, 600000, 32)
+		if e != nil || subtle.ConstantTimeCompare(got, oldHash) != 1 {
+			return errors.New("密码验证失败")
+		}
+	} else {
+		fmt.Fprint(os.Stderr, "再次输入密码: ")
+		b, e := readPassword(r)
+		if e != nil {
+			return e
+		}
+		if len(a) < 12 || a != b {
+			return errors.New("密码不匹配或长度不足")
+		}
+	}
+	secret, encoded, e := auth.NewTOTPSecret()
 	if e != nil {
 		return e
 	}
-	if len(a) < 12 || a != b {
-		return errors.New("密码不匹配或长度不足")
+	now := time.Now().UTC().Format(time.RFC3339)
+	if reset {
+		_, e = st.DB.Exec(`UPDATE admins SET totp_secret=? WHERE id=1`, secret)
+	} else {
+		salt := make([]byte, 16)
+		if _, e = rand.Read(salt); e != nil {
+			return e
+		}
+		hash, e := pbkdf2.Key(sha256.New, a, salt, 600000, 32)
+		if e != nil {
+			return e
+		}
+		_, e = st.DB.Exec(`INSERT INTO admins(id,password_hash,password_salt,totp_secret,created_at) VALUES(1,?,?,?,?)`, hash, salt, secret, now)
 	}
-	secret := make([]byte, 20)
-	if _, e = rand.Read(secret); e != nil {
+	if e != nil {
 		return e
 	}
-	return errors.New("admin bootstrap not yet available")
+	_, _ = st.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT '',last_totp_step INTEGER NOT NULL DEFAULT -1)`)
+	fmt.Fprintln(os.Stdout, "otpauth://totp/"+url.QueryEscape("SWS Vault:admin")+"?secret="+encoded+"&issuer=SWS%20Vault&digits=6&period=30")
+	for i := range []byte(a) {
+		_ = i
+	}
+	for i := range secret {
+		secret[i] = 0
+	}
+	return nil
+}
+func readPassword(r *bufio.Reader) (string, error) {
+	st, e := os.Stdin.Stat()
+	terminal := e == nil && st.Mode()&os.ModeCharDevice != 0
+	if terminal {
+		if e = exec.Command("stty", "-echo").Run(); e != nil {
+			return "", e
+		}
+		defer exec.Command("stty", "echo").Run()
+	}
+	v, e := readLine(r)
+	if terminal {
+		fmt.Fprintln(os.Stderr)
+	}
+	return v, e
 }
 func readLine(r *bufio.Reader) (string, error) {
 	s, e := r.ReadString('\n')

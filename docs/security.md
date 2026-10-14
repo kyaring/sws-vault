@@ -26,3 +26,7 @@ Plaintext is necessarily present while encrypting/decrypting in process memory. 
 - Scopes are comma-separated and checked before dispatch. Namespace mismatches are intentionally indistinguishable from missing records. CIDR allowlists parse the socket peer address; forwarding headers are not trusted by the current listener.
 - The in-process token bucket defaults to 60 requests per client per minute. It resets on restart and is not a distributed limiter; deployments must keep a single process until a shared limiter is designed.
 - Audit events are structured fields only. No request bodies, authorization headers, or credential values are copied into audit records.
+
+### Admin password hashing limitation
+
+The approved `golang.org/x/crypto` module is not present in the local module cache, and outbound access to `proxy.golang.org` timed out during this task. The development panel currently uses Go's standard-library PBKDF2-HMAC-SHA256 (600,000 iterations) rather than the task-required Argon2id. This is a documented deviation, not equivalent completion; do not deploy until Argon2id is available and substituted with tests. No extra dependency was introduced.

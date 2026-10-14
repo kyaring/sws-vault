@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-func (s *Server) admin(w http.ResponseWriter, r *http.Request) { errOut(w, 404, "not found") }
+func (s *Server) admin(w http.ResponseWriter, r *http.Request) { s.adminHandler(w, r) }
 func (s *Server) mcp(w http.ResponseWriter, r *http.Request, c Client) {
 	var q map[string]any
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&q) != nil {
