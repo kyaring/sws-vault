@@ -42,7 +42,7 @@
 - go test -count=1 ./...：通过。
 - go test -count=1 -race ./...：通过（setsid/nohup 后台执行）。
 - go vet ./...、go build ./...、gofmt 和 git diff --check：通过。
-- sh docs/process/check-task.sh SV-20261015-02：通过；基线 d70757d，改动范围合规，规模 3,856 非测试行 / 49 个文件（上限 12,000 / 80），包含 acceptance 与 race 检查。
+- sh docs/process/check-task.sh SV-20261015-02：通过；基线 d70757d，改动范围合规，规模 3,815 非测试行 / 49 个文件（上限 12,000 / 80），包含 acceptance 与 race 检查。
 - README 快速开始冒烟：通过；临时目录完成 keygen、admin init、client create、serve、healthz、write、list、resolve；list/create 未泄漏假值，resolve 只在显式请求时返回假值。
 - make build 生成的 ./bin/swsvault version 与 git rev-parse --short=12 HEAD 完全一致；最终报告提交后再次执行同一检查和 README 冒烟。
 - 主机名大小写会规范化后按精确 allowlist 匹配；尾点主机名只有 allowlist 也显式带尾点时才匹配。userinfo、IPv6 loopback/ULA、解析到 loopback 的十进制 IP 和云 metadata IP 均按当前策略拒绝。
