@@ -6,4 +6,4 @@
 | RV-SV-20261015-01 | 审核 SV-20261015-01（e5b8546） | RikkaHub-1 | done | Hark 04:58 派发；05:06 完成，结论 CHANGES REQUESTED，报告 docs/reviews/SV-20261015-01-review.md | 2026-10-15 05:06 |
 | SV-20261015-02 | 返工：v1 审核意见整改（1 阻塞，3 一般，另有建议升级为必改） | GPT | changes-requested | 05:56 RikkaHub-1 复审 CHANGES REQUESTED（被审提交 4ab69e8a1000）；报告 docs/reviews/SV-20261015-02-review.md | 2026-10-15 05:56 |
 | RV-SV-20261015-02 | 审核 SV-02 返工（4ab69e8） | RikkaHub-1 | verified（Hark 06:10 终签，同意 CHANGES REQUESTED，问题 2 升级为阻塞） | Hark 05:48 派发；05:56 完成，结论 CHANGES REQUESTED，报告 docs/reviews/SV-20261015-02-review.md | 2026-10-15 05:56 |
-| SV-20261015-03 | 返工 R2：恢复 api.md、修 git-credential 用户名回归、ops 矛盾句、两条测试改为行为测试 | GPT | ready | 依据 docs/reviews/SV-20261015-02-review.md | 2026-10-15 06:10 |
+| SV-20261015-03 | 返工 R2：恢复 api.md、修 git-credential 用户名回归、ops 矛盾句、两条测试改为行为测试 | GPT | changes-requested | 06:56 RikkaHub-1 复审 CHANGES REQUESTED（被审提交 74688206b5a5；6 条必改全部满足，卡面验收第 1 条按字面不可满足需裁定）；报告 docs/reviews/SV-20261015-03-review.md | 2026-10-15 06:56 |
