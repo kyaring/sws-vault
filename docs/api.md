@@ -8,6 +8,8 @@ The process accepts a `KEY=VALUE` config file via `--config FILE`; explicit `SWS
 
 Send `Authorization: Bearer <client-token>`. The token is stored as a SHA-256 digest. Clients have namespace, scopes, optional CIDR restrictions, optional expiry, and disable state. Missing/invalid/expired/disabled token: 401; CIDR mismatch or missing scope: 403; cross-namespace lookup: 404; rate limit: 429. Supported scopes are `secrets:list`, `secrets:write`, `fetch`, `resolve`, and `intents:create`.
 
+The admin panel's “接入项目” quick flow creates clients with `secrets:list,fetch` by default; `resolve` is added only when the operator explicitly ticks “允许取出明文（命令注入 / git 需要）”, which also sets `allow_resolve=true` on the selected secrets. Secrets moved out of the unassigned pool keep `allow_resolve=false` unless that box is ticked, while secrets already owned by the project keep their existing `allow_resolve` value. The same form accepts an optional “限制来源 IP” field: a comma-separated list of IPs or CIDRs, where a bare IPv4 is normalized to `/32` and a bare IPv6 to `/128`. An invalid value returns HTTP 400 and creates neither the project nor the client. The normalized list is stored in `clients.cidrs` and enforced by the same `ipAllowed`/`sourceIP` path as `swsvault client create --cidrs`.
+
 ## REST endpoints
 
 | Method and path | Scope | Behavior |

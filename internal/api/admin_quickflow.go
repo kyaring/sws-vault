@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -274,7 +275,7 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 				projectItems = append(projectItems, item)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目：{{.Project}}</h1><p class="lead">第 2 步，共 2 步</p><p>选择未关联密钥或已经属于此项目的密钥。提交后会创建一个新的客户端令牌。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="client" value="{{.Client}}">{{if .UnassignedItems}}<h2>未关联</h2><div class="group">{{range .UnassignedItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if .ProjectItems}}<h2>已在此项目</h2><div class="group">{{range .ProjectItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if not .Items}}<p>暂无可选密钥。</p>{{end}}<div class="bar"><button class="btn block selected-submit">生成项目配置</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Items": items, "UnassignedItems": unassignedItems, "ProjectItems": projectItems, "Project": project, "Client": client})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目：{{.Project}}</h1><p class="lead">第 2 步，共 2 步</p><p>选择未关联密钥或已经属于此项目的密钥。提交后会创建一个新的客户端令牌。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="client" value="{{.Client}}">{{if .UnassignedItems}}<h2>未关联</h2><div class="group">{{range .UnassignedItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if .ProjectItems}}<h2>已在此项目</h2><div class="group">{{range .ProjectItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if not .Items}}<p>暂无可选密钥。</p>{{end}}<details class="advanced"><summary>高级</summary><label class="check"><input type="checkbox" name="allow_resolve"><span>允许取出明文（命令注入 / git 需要）<small>给 AI 用请不要勾选。</small></span></label><label>限制来源 IP（可选）<input name="cidrs" autocomplete="off" placeholder="10.0.0.0/8, 192.168.1.5"><small class="hint">只有来自这些地址的调用会被接受；单个 IP 会自动补成 /32（IPv4）或 /128（IPv6）。</small></label></details><div class="bar"><button class="btn block selected-submit">生成项目配置</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Items": items, "UnassignedItems": unassignedItems, "ProjectItems": projectItems, "Project": project, "Client": client})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -287,6 +288,18 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 	if !projectNamePattern.MatchString(project) || !namePattern.MatchString(clientName) {
 		adminErrOut(w, 400, "invalid project or client name")
 		return
+	}
+	// 安全默认值：快速流程默认只给 fetch，resolve 必须显式勾选；CIDR 在事务开始前校验，避免留下半成品。
+	allowResolve := r.Form.Get("allow_resolve") == "on"
+	cidrs, cidrErr := normalizeCIDRs(r.Form.Get("cidrs"))
+	if cidrErr != nil {
+		adminErrOut(w, 400, "限制来源 IP 无效：请填写 IP 或 CIDR，多个用英文逗号分隔，例如 10.0.0.0/8, 192.168.1.5")
+		return
+	}
+	cidrList := strings.Join(cidrs, ",")
+	scopes := "secrets:list,fetch"
+	if allowResolve {
+		scopes = "secrets:list,resolve,fetch"
 	}
 	raw := make([]byte, 32)
 	if _, e := rand.Read(raw); e != nil {
@@ -322,7 +335,7 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 500, "could not create project")
 		return
 	}
-	_, e = tx.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,cidrs,expires_at,disabled,created_at) VALUES(?,?,?,?,?,'','',0,?)`, clientID, project, clientName, sum[:], "secrets:list,resolve,fetch", now)
+	_, e = tx.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,cidrs,expires_at,disabled,created_at) VALUES(?,?,?,?,?,?,'',0,?)`, clientID, project, clientName, sum[:], scopes, cidrList, now)
 	if e != nil {
 		adminErrOut(w, 500, "could not create client")
 		return
@@ -368,7 +381,11 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
-		bd.AllowResolve = true
+		if allowResolve {
+			bd.AllowResolve = true
+		} else if oldNS == unassignedNS {
+			bd.AllowResolve = false
+		}
 		if oldNS == unassignedNS {
 			bd.AllowedClients = []string{clientID}
 		} else if len(bd.AllowedClients) > 0 {
@@ -405,10 +422,53 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 	env := fmt.Sprintf("SWSV_URL=%s\nSWSV_TOKEN=%s\nSWSV_NS=%s", base, token, project)
 	runExample := fmt.Sprintf("SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault run --secret vault:%s/<secret-id> -- <command>", base, token, project, project)
 	gitExample := fmt.Sprintf("git config --global credential.helper '!SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault git-credential'", base, token, project)
+	fetchExample := fmt.Sprintf(`export SWSV_URL=%s
+export SWSV_TOKEN=%s
+export SWSV_NS=%s
+printf 'Authorization: Bearer %%s\n' "$SWSV_TOKEN" | curl -sS -X POST "$SWSV_URL/v1/fetch" -H @- -H 'Content-Type: application/json' -d '{"secret":"vault:%s/<secret-id>","method":"GET","url":"https://api.example.com/"}'`, base, token, project, project)
+	mcpExample := fmt.Sprintf(`{
+  "mcpServers": {
+    "sws-vault": {
+      "type": "http",
+      "url": "%s/mcp",
+      "headers": { "Authorization": "Bearer ${SWSV_TOKEN}" }
+    }
+  }
+}`, base)
 	resultTitle := "已接入"
 	if projectExists != 0 {
 		resultTitle = "追加接入"
 	}
+	cidrNote := ""
+	if cidrList != "" {
+		cidrNote = strings.Join(cidrs, ", ")
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section><section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">本次关联密钥数：{{.Count}}</p><p class="hint">使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><div class="bar"><a class="btn secondary" href="/admin/">返回首页</a></div>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected), "BaseURLMissing": baseURLMissing})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section>{{if .AllowResolve}}<section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">此令牌可以取出明文，不要交给 AI。</p>{{else}}<section class="secret"><header>代发调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Fetch}}</pre></section><p class="hint">令牌只放在环境变量或 -H @- 里，不会出现在命令行参数中。</p><section class="secret"><header>MCP 配置示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.MCP}}</pre></section><p class="hint">此令牌只能代发请求，不能取出明文。</p>{{end}}{{if .CIDRs}}<p class="hint">限制来源 IP：{{.CIDRs}}</p>{{end}}<p class="hint">本次关联密钥数：{{.Count}}</p><p class="hint">使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><div class="bar"><a class="btn secondary" href="/admin/">返回首页</a></div>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Fetch": fetchExample, "MCP": mcpExample, "Count": len(selected), "BaseURLMissing": baseURLMissing, "AllowResolve": allowResolve, "CIDRs": cidrNote})
+}
+
+// normalizeCIDRs 规范化逗号分隔的 IP / CIDR：单个 IPv4 补 /32，单个 IPv6 补 /128，CIDR 归一为网络地址。
+// 任一取值非法即返回错误；调用方必须在创建任何记录之前拒绝请求，避免留下半成品。
+func normalizeCIDRs(raw string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		if ip := net.ParseIP(v); ip != nil {
+			if ip.To4() != nil {
+				out = append(out, ip.String()+"/32")
+			} else {
+				out = append(out, ip.String()+"/128")
+			}
+			continue
+		}
+		_, network, err := net.ParseCIDR(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid source address %q", v)
+		}
+		out = append(out, network.String())
+	}
+	return out, nil
 }
