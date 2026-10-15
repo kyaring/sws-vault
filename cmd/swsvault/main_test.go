@@ -71,8 +71,8 @@ func TestLocalSmokeKeygenAdminClientFetchMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if !strings.HasPrefix(out, "otpauth://totp/") {
-		t.Fatal("admin init did not emit enrollment URI")
+	if !strings.Contains(out, "enroll TOTP") || strings.Contains(out, "otpauth://") {
+		t.Fatal("admin init should direct to browser TOTP enrollment without printing a secret")
 	}
 	tokenOut, tokenErr, e := captureIO(t, "", func() error {
 		return client([]string{"create", "--ns", "demo", "--name", "smoke", "--scopes", "secrets:list,secrets:write,fetch,resolve,intents:create"})
@@ -97,6 +97,13 @@ func TestLocalSmokeKeygenAdminClientFetchMCP(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer stStore.Close()
+	totpSecret, _, e := auth.NewTOTPSecret()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = stStore.DB.Exec(`UPDATE admins SET totp_secret=?,totp_enrolled=1 WHERE id=1`, totpSecret); e != nil {
+		t.Fatal(e)
+	}
 	var totp []byte
 	if e = stStore.DB.QueryRow(`SELECT totp_secret FROM admins WHERE id=1`).Scan(&totp); e != nil {
 		t.Fatal(e)
@@ -168,7 +175,7 @@ func TestLocalSmokeKeygenAdminClientFetchMCP(t *testing.T) {
 	u, _ := url.Parse(backend.URL)
 	port := u.Port()
 	headers, _ := json.Marshal(map[string]string{"X-Api-Key": "{v}"})
-	panelForm := url.Values{"csrf": {match[1]}, "ns": {"demo"}, "label": {"smoke-fake"}, "provider": {"generic"}, "type": {"token"}, "value": {sentinel}, "hosts": {"127.0.0.1:" + port}, "headers": {string(headers)}, "allow_private": {"on"}, "allow_http": {"on"}, "allow_resolve": {"on"}}
+	panelForm := url.Values{"csrf": {match[1]}, "project": {"demo"}, "label": {"smoke-fake"}, "provider": {"generic"}, "type": {"token"}, "value": {sentinel}, "hosts": {"127.0.0.1:" + port}, "headers": {string(headers)}, "allow_private": {"on"}, "allow_http": {"on"}, "allow_resolve": {"on"}}
 	req, _ = http.NewRequest("POST", srv.URL+"/admin/secrets/new", strings.NewReader(panelForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(session)
@@ -176,9 +183,13 @@ func TestLocalSmokeKeygenAdminClientFetchMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("panel write failed: %d", resp.StatusCode)
+	}
+	resultPage, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(string(resultPage), sentinel) {
+		t.Fatal("quick-create result page echoed secret value")
 	}
 	var secretID string
 	if e = stStore.DB.QueryRow(`SELECT id FROM secrets WHERE ns='demo' AND label='smoke-fake'`).Scan(&secretID); e != nil {
@@ -302,5 +313,65 @@ func TestServeRejectsLooseMasterKeyPermissions(t *testing.T) {
 		if listenerStarted {
 			t.Fatalf("listener started before rejecting master.key mode %04o", mode)
 		}
+	}
+}
+
+func TestAdminInitGenerateAndResetTOTPFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SWSV_CONFIG", "")
+	t.Setenv("SWSV_DATA_DIR", dir)
+	t.Setenv("SWSV_DB_PATH", "")
+	t.Setenv("SWSV_MASTER_KEY_PATH", "")
+	out, _, err := captureIO(t, "", func() error { return admin([]string{"init", "--generate"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`Initial password \(shown once\): ([A-Za-z0-9_-]{32})`).FindStringSubmatch(out)
+	if len(match) != 2 || strings.Contains(out, "otpauth://") {
+		t.Fatalf("unexpected generated-init output: %q", out)
+	}
+	c, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(c.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var enrolled, mustChange int
+	var secret []byte
+	if err := st.DB.QueryRow(`SELECT totp_enrolled,must_change_password,totp_secret FROM admins WHERE id=1`).Scan(&enrolled, &mustChange, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if enrolled != 0 || mustChange != 1 || len(secret) != 0 {
+		t.Fatalf("enrolled=%d must_change=%d secret_bytes=%d", enrolled, mustChange, len(secret))
+	}
+	var initAudit int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM audit WHERE action='admin-init' AND result='ok'`).Scan(&initAudit); err != nil {
+		t.Fatal(err)
+	}
+	if initAudit != 1 {
+		t.Fatalf("admin-init audit count=%d", initAudit)
+	}
+	resetOut, _, err := captureIO(t, match[1]+"\n", func() error { return admin([]string{"reset-totp"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resetOut, "重新走网页") && !strings.Contains(resetOut, "web panel") {
+		t.Fatalf("reset output missing browser enrollment instruction: %q", resetOut)
+	}
+	if err := st.DB.QueryRow(`SELECT totp_enrolled,must_change_password,totp_secret FROM admins WHERE id=1`).Scan(&enrolled, &mustChange, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if enrolled != 0 || len(secret) != 0 || mustChange != 1 {
+		t.Fatalf("reset did not preserve safe unenrolled state: enrolled=%d must_change=%d secret_bytes=%d", enrolled, mustChange, len(secret))
+	}
+	var resetAudit int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM audit WHERE action='totp-reset' AND result='ok'`).Scan(&resetAudit); err != nil {
+		t.Fatal(err)
+	}
+	if resetAudit != 1 {
+		t.Fatalf("totp-reset audit count=%d", resetAudit)
 	}
 }

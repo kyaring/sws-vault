@@ -14,7 +14,6 @@ import (
 	"github.com/kyaring/sws-vault/internal/auth"
 	"io"
 	_ "modernc.org/sqlite"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,20 +138,25 @@ func serve() error {
 }
 func admin(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: admin init|reset-totp|rotate-kek")
+		return errors.New("usage: admin init [--generate]|reset-totp|rotate-kek")
 	}
 	switch args[0] {
 	case "init":
-		return adminInit(false)
+		generate := len(args) == 2 && args[1] == "--generate"
+		if len(args) > 1 && !generate {
+			return errors.New("usage: admin init [--generate]")
+		}
+		return adminInitMode(false, generate)
 	case "reset-totp":
-		return adminInit(true)
+		return adminInitMode(true, false)
 	case "rotate-kek":
 		return adminRotateKEK()
 	default:
-		return errors.New("usage: admin init|reset-totp|rotate-kek")
+		return errors.New("usage: admin init [--generate]|reset-totp|rotate-kek")
 	}
 }
-func adminInit(reset bool) error {
+func adminInit(reset bool) error { return adminInitMode(reset, false) }
+func adminInitMode(reset, generate bool) error {
 	c, e := config.Load()
 	if e != nil {
 		return e
@@ -170,62 +174,81 @@ func adminInit(reset bool) error {
 	if !found && reset {
 		return errors.New("admin not initialized")
 	}
-	r := bufio.NewReader(os.Stdin)
-	fmt.Fprint(os.Stderr, "管理员密码（至少 12 字符）: ")
-	a, e := readPassword(r)
-	if e != nil {
-		return e
-	}
+	password := ""
 	if reset {
-		got, e := auth.HashPassword(a, oldSalt)
-		if e != nil || subtle.ConstantTimeCompare(got, oldHash) != 1 {
-			return errors.New("密码验证失败")
-		}
-	} else {
-		fmt.Fprint(os.Stderr, "再次输入密码: ")
-		b, e := readPassword(r)
+		r := bufio.NewReader(os.Stdin)
+		fmt.Fprint(os.Stderr, "当前管理员密码: ")
+		password, e = readPassword(r)
 		if e != nil {
 			return e
 		}
-		if len(a) < 12 || a != b {
+		got, x := auth.HashPassword(password, oldSalt)
+		if x != nil || subtle.ConstantTimeCompare(got, oldHash) != 1 {
+			return errors.New("密码验证失败")
+		}
+	} else if generate {
+		b := make([]byte, 24)
+		if _, e = rand.Read(b); e != nil {
+			return e
+		}
+		password = base64.RawURLEncoding.EncodeToString(b)
+	} else {
+		r := bufio.NewReader(os.Stdin)
+		fmt.Fprint(os.Stderr, "管理员密码（至少 12 字符）: ")
+		password, e = readPassword(r)
+		if e != nil {
+			return e
+		}
+		fmt.Fprint(os.Stderr, "再次输入密码: ")
+		confirm, x := readPassword(r)
+		if x != nil {
+			return x
+		}
+		if len(password) < 12 || password != confirm {
 			return errors.New("密码不匹配或长度不足")
 		}
 	}
-	secret, encoded, e := auth.NewTOTPSecret()
-	if e != nil {
-		return e
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if reset {
-		_, e = st.DB.Exec(`UPDATE admins SET totp_secret=? WHERE id=1`, secret)
+		_, e = st.DB.Exec(`UPDATE admins SET totp_secret=X'',totp_enrolled=0,pending_totp_secret=NULL,pending_totp_expires='' WHERE id=1`)
 	} else {
 		salt := make([]byte, 16)
 		if _, e = rand.Read(salt); e != nil {
 			return e
 		}
-		hash, e := auth.HashPassword(a, salt)
-		if e != nil {
-			return e
+		hash, x := auth.HashPassword(password, salt)
+		if x != nil {
+			return x
 		}
-		_, e = st.DB.Exec(`INSERT INTO admins(id,password_hash,password_salt,totp_secret,created_at) VALUES(1,?,?,?,?)`, hash, salt, secret, now)
+		_, e = st.DB.Exec(`INSERT INTO admins(id,password_hash,password_salt,totp_secret,created_at,totp_enrolled,must_change_password,pending_totp_secret,pending_totp_expires) VALUES(1,?,?,X'',?,0,?,NULL,'')`, hash, salt, now, boolInt(generate))
 	}
 	if e != nil {
 		return e
 	}
 	_, _ = st.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT '',last_totp_step INTEGER NOT NULL DEFAULT -1)`)
+	if reset {
+		_, _ = st.DB.Exec(`INSERT INTO admin_state(id,failed_count,locked_until,last_totp_step) VALUES(1,0,'',-1) ON CONFLICT(id) DO UPDATE SET failed_count=0,locked_until='',last_totp_step=-1`)
+	}
 	action := "admin-init"
 	if reset {
 		action = "totp-reset"
 	}
 	_, _ = st.DB.Exec(`INSERT INTO audit(at,actor,action,result,source_ip) VALUES(?,?,?,?,?)`, now, "admin", action, "ok", "local")
-	if reset {
-		_, _ = st.DB.Exec(`UPDATE admin_state SET failed_count=0,locked_until='',last_totp_step=-1 WHERE id=1`)
-	}
-	fmt.Fprintln(os.Stdout, "otpauth://totp/"+url.QueryEscape("SWS Vault:admin")+"?secret="+encoded+"&issuer=SWS%20Vault&digits=6&period=30")
-	for i := range secret {
-		secret[i] = 0
+	if generate {
+		fmt.Fprintln(os.Stdout, "Initial password (shown once): "+password)
+		fmt.Fprintln(os.Stdout, "Next: sign in on the internal panel, change this password, then enroll TOTP by scanning the QR code.")
+	} else if reset {
+		fmt.Fprintln(os.Stdout, "TOTP enrollment reset; sign in to complete enrollment in the web panel.")
+	} else {
+		fmt.Fprintln(os.Stdout, "Admin password initialized. Sign in on the internal panel to enroll TOTP.")
 	}
 	return nil
+}
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 func readPassword(r *bufio.Reader) (string, error) {
 	st, e := os.Stdin.Stat()

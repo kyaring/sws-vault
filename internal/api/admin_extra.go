@@ -27,7 +27,7 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		name := strings.TrimSpace(r.Form.Get("name"))
 		if !namePattern.MatchString(name) {
-			errOut(w, 400, "invalid namespace")
+			errOut(w, 400, "invalid project")
 			return
 		}
 		id, e := randomID()
@@ -37,14 +37,14 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?)`, id, name, time.Now().UTC().Format(time.RFC3339))
 		if e != nil {
-			errOut(w, 400, "namespace already exists")
+			errOut(w, 400, "project already exists")
 			return
 		}
-		s.audit("admin", name, "namespace-create", "", "", "ok", s.sourceIP(r))
+		s.audit("admin", name, "project-create", "", "", "ok", s.sourceIP(r))
 		http.Redirect(w, r, "/admin/namespaces", http.StatusSeeOther)
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT name,created_at FROM namespaces ORDER BY name`)
+	rows, e := s.S.DB.Query(`SELECT name,created_at FROM namespaces WHERE name<>'_unassigned' ORDER BY name`)
 	if e != nil {
 		errOut(w, 500, "internal error")
 		return
@@ -58,7 +58,7 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 			list = append(list, v)
 		}
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>命名空间</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><button>创建</button></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>项目</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><button>创建</button></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
 }
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -142,7 +142,7 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 			list = append(list, v)
 		}
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>命名空间<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><button>创建客户端</button></form><table><tr><th>ID</th><th>NS</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><button>创建客户端</button></form><table><tr><th>ID</th><th>项目</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
 }
 func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -206,7 +206,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	var bd Binding
 	_ = json.Unmarshal([]byte(b), &bd)
 	headers, _ := json.Marshal(bd.Headers)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改绑定：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改使用范围：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP})
 	_ = ns
 	_ = providerName
 }
@@ -216,6 +216,13 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ns, actor, from, to := r.URL.Query().Get("ns"), r.URL.Query().Get("actor"), r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	displayNS := ns
+	if ns == "未关联" {
+		ns = "_unassigned"
+	}
+	if ns == "_unassigned" {
+		displayNS = "未关联"
+	}
 	where := []string{"1=1"}
 	args := []any{}
 	if ns != "" {
@@ -266,6 +273,9 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v item
 		if rows.Scan(&v.At, &v.Actor, &v.NS, &v.ID, &v.Action, &v.Host, &v.Result, &v.IP) == nil {
+			if v.NS == "_unassigned" {
+				v.NS = "未关联"
+			}
 			list = append(list, v)
 		}
 	}
@@ -293,7 +303,7 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	if page*50 < total {
 		next = mk(page + 1)
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>NS<input name="ns" value="{{.NS}}"></label><label>Client/Admin Actor<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>Actor</th><th>NS</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": ns, "Actor": actor, "From": from, "To": to})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>项目<input name="ns" value="{{.NS}}"></label><label>Client/Admin Actor<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>Actor</th><th>项目</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": displayNS, "Actor": actor, "From": from, "To": to})
 }
 func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -391,7 +401,7 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>创建一次性录入链接</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>命名空间 <input name="ns" value="default" required></label><label>标签 <input name="label" required></label><button>创建链接</button></form></html>`, map[string]string{"CSRF": sess.csrf})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>创建一次性录入链接</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目 <input name="ns" value="default" required></label><label>标签 <input name="label" required></label><button>创建链接</button></form></html>`, map[string]string{"CSRF": sess.csrf})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -420,7 +430,7 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		ns = "default"
 	}
 	if !namePattern.MatchString(ns) {
-		errOut(w, 400, "invalid namespace")
+		errOut(w, 400, "invalid project")
 		return
 	}
 	_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(h[:16]), ns, now.Format(time.RFC3339))

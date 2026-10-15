@@ -17,15 +17,30 @@ func Run(args []string) error {
 	}
 	var binds []string
 	idx := 0
-	for idx < len(args) && args[idx] == "--env" {
-		if idx+1 >= len(args) {
-			return errors.New("--env requires NAME=vault:ns/id")
+	for idx < len(args) {
+		switch args[idx] {
+		case "--env":
+			if idx+1 >= len(args) {
+				return errors.New("--env requires NAME=vault:ns/id")
+			}
+			binds = append(binds, args[idx+1])
+			idx += 2
+		case "--secret":
+			if idx+1 >= len(args) {
+				return errors.New("--secret requires vault:ns/id")
+			}
+			if !strings.HasPrefix(args[idx+1], "vault:") {
+				return errors.New("--secret requires a vault reference")
+			}
+			binds = append(binds, "SWSV_SECRET="+args[idx+1])
+			idx += 2
+		default:
+			goto optionsDone
 		}
-		binds = append(binds, args[idx+1])
-		idx += 2
 	}
+optionsDone:
 	if idx >= len(args) || args[idx] != "--" || idx+1 >= len(args) {
-		return errors.New("usage: run [--env-file FILE] --env NAME=vault:ns/id -- command args")
+		return errors.New("usage: run [--env-file FILE] [--env NAME=vault:ns/id] [--secret vault:ns/id] -- command args")
 	}
 	cmdArgs := args[idx+1:]
 	env := map[string]string{}

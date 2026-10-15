@@ -12,6 +12,10 @@ import (
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request, c Client) {
 	ns := r.URL.Query().Get("ns")
+	if ns == "_unassigned" || c.NS == "_unassigned" {
+		errOut(w, 404, "not found")
+		return
+	}
 	if ns == "" {
 		ns = c.NS
 	}
@@ -175,7 +179,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	ns, id, ok := ref(q.Secret)
-	if !ok || ns != c.NS {
+	if !ok || ns == "_unassigned" || c.NS == "_unassigned" || ns != c.NS {
 		errOut(w, 404, "not found")
 		return
 	}

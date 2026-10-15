@@ -40,5 +40,5 @@ fi
 chmod 0600 "$key"
 if [[ -z "$ROOT" ]]; then chown -R sws-vault:sws-vault "$data" "$conf"; fi
 printf 'Installed. Service is NOT enabled or started.\n'
-printf 'Panel: http://192.168.20.132:9531/admin (direct LAN access; no tunnel).\n'
+printf '下一步：执行 admin init --generate，然后用浏览器打开面板完成扫码绑定。\n'
 printf 'Firewall unchanged: allow only 192.168.20.0/24 per docs/ops.md if/when approved.\n'

@@ -209,3 +209,28 @@ func TestGitCredentialUsesResolveUsernameFromRealVaultService(t *testing.T) {
 		}
 	}
 }
+
+func TestRunSecretFlagInjectsSWSVSecret(t *testing.T) {
+	const sentinel = "SWSV-RUN-SECRET-FLAG-SENTINEL"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/resolve" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":"` + sentinel + `"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("SWSV_URL", srv.URL)
+	t.Setenv("SWSV_TOKEN", "fake-client-token")
+	t.Setenv("SWSV_NS", "demo")
+	out, stderr, err := captureCommandIO(t, "", func() error {
+		return Run([]string{"--secret", "vault:demo/fake-id", "--", "sh", "-c", "printf %s \\\"$SWSV_SECRET\\\"; printf %s \\\"$SWSV_SECRET\\\" >&2"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, sentinel) || strings.Contains(stderr, sentinel) || !strings.Contains(out, "[REDACTED]") || !strings.Contains(stderr, "[REDACTED]") {
+		t.Fatalf("--secret output was not redacted: stdout=%q stderr=%q", out, stderr)
+	}
+}

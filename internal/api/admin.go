@@ -10,7 +10,6 @@ import (
 	"html/template"
 
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,8 @@ import (
 type adminSession struct {
 	csrf          string
 	created, last time.Time
+	enrollOnly    bool
+	mustChange    bool
 }
 
 var sessions = struct {
@@ -95,7 +96,34 @@ func cleanupMemoryState(now time.Time) {
 
 func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin/login" {
+		if r.Method == http.MethodGet {
+			if _, err := r.Cookie("sws_admin"); err == nil {
+				if _, ok := s.adminSession(w, r); !ok {
+					return
+				}
+			}
+		}
 		s.adminLogin(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/password" {
+		s.adminChangePassword(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/totp/enroll" {
+		s.adminEnrollTOTP(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/quick/project" {
+		s.adminQuickProject(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/advanced" {
+		s.adminAdvanced(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/" || r.URL.Path == "/admin" {
+		s.adminDashboard(w, r)
 		return
 	}
 	if r.URL.Path == "/admin/intents/new" {
@@ -143,6 +171,13 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nsFilter := r.URL.Query().Get("ns")
+	displayNSFilter := nsFilter
+	if nsFilter == "未关联" {
+		nsFilter = "_unassigned"
+	}
+	if nsFilter == "_unassigned" {
+		displayNSFilter = "未关联"
+	}
 	providerFilter := r.URL.Query().Get("provider")
 	query := `SELECT id,ns,label,provider,type,preview,fingerprint,status,bindings,last_used_at FROM secrets WHERE 1=1`
 	args := []any{}
@@ -166,6 +201,9 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v item
 		if rows.Scan(&v.ID, &v.NS, &v.Label, &v.Provider, &v.Type, &v.Preview, &v.Fingerprint, &v.Status, &v.Bindings, &v.LastUsed) == nil {
+			if v.NS == "_unassigned" {
+				v.NS = "未关联"
+			}
 			var bd Binding
 			if json.Unmarshal([]byte(v.Bindings), &bd) == nil {
 				bd.Username = mask(bd.Username)
@@ -180,8 +218,8 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		Items    []item
 		NS       string
 		Provider string
-	}{sess.csrf, items, nsFilter, providerFilter}
-	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">命名空间</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>命名空间<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form><table><tr><th>ID</th><th>命名空间</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>绑定策略</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">绑定</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
+	}{sess.csrf, items, displayNSFilter, providerFilter}
+	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
 	render(w, page, data)
 }
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +231,13 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		csrf := base64.RawURLEncoding.EncodeToString(b)
 		http.SetCookie(w, &http.Cookie{Name: "sv_login_csrf", Value: csrf, Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.C.PublicBaseURL, "https://")})
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>登录</title><h1>SWS Vault 登录</h1><form method="post"><input type="hidden" name="csrf" value="`+template.HTMLEscapeString(csrf)+`"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label><label>TOTP <input name="totp" inputmode="numeric" pattern="[0-9]{6}" required></label><button>登录</button></form></html>`, nil)
+		var enrolled int = 1
+		_ = s.S.DB.QueryRow(`SELECT totp_enrolled FROM admins WHERE id=1`).Scan(&enrolled)
+		totpField := `<label>验证码 <input name="totp" inputmode="numeric" pattern="[0-9]{6}" required></label>`
+		if enrolled == 0 {
+			totpField = ""
+		}
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>登录</title><h1>SWS Vault 登录</h1><form method="post"><input type="hidden" name="csrf" value="`+template.HTMLEscapeString(csrf)+`"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label>`+totpField+`<button>登录</button></form></html>`, nil)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -214,7 +258,8 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var stored, salt, secret []byte
-	e = s.S.DB.QueryRow(`SELECT password_hash,password_salt,totp_secret FROM admins WHERE id=1`).Scan(&stored, &salt, &secret)
+	var enrolled, mustChange int
+	e = s.S.DB.QueryRow(`SELECT password_hash,password_salt,totp_secret,totp_enrolled,must_change_password FROM admins WHERE id=1`).Scan(&stored, &salt, &secret, &enrolled, &mustChange)
 	if e != nil {
 		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
@@ -228,19 +273,25 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		errOut(w, 401, "invalid credentials")
 		return
 	}
-	var last int64 = -1
-	_ = s.S.DB.QueryRow(`SELECT last_totp_step FROM admin_state WHERE id=1`).Scan(&last)
-	step, ok := auth.VerifyTOTP(secret, r.Form.Get("totp"), time.Now(), last)
-	if !ok {
-		s.loginFailure(ip)
-		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
-		errOut(w, 401, "invalid credentials")
-		return
+	var step int64 = -1
+	if enrolled != 0 {
+		var last int64 = -1
+		_ = s.S.DB.QueryRow(`SELECT last_totp_step FROM admin_state WHERE id=1`).Scan(&last)
+		var valid bool
+		step, valid = auth.VerifyTOTP(secret, r.Form.Get("totp"), time.Now(), last)
+		if !valid {
+			s.loginFailure(ip)
+			s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
+			errOut(w, 401, "invalid credentials")
+			return
+		}
 	}
 	loginAttempts.Lock()
 	delete(loginAttempts.m, ip)
 	loginAttempts.Unlock()
-	_, _ = s.S.DB.Exec(`INSERT INTO admin_state(id,failed_count,locked_until,last_totp_step) VALUES(1,0,'',?) ON CONFLICT(id) DO UPDATE SET failed_count=0,locked_until='',last_totp_step=excluded.last_totp_step`, step)
+	if enrolled != 0 {
+		_, _ = s.S.DB.Exec(`INSERT INTO admin_state(id,failed_count,locked_until,last_totp_step) VALUES(1,0,'',?) ON CONFLICT(id) DO UPDATE SET failed_count=0,locked_until='',last_totp_step=excluded.last_totp_step`, step)
+	}
 	token := make([]byte, 32)
 	if _, e = rand.Read(token); e != nil {
 		errOut(w, 500, "internal error")
@@ -249,12 +300,20 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	raw := base64.RawURLEncoding.EncodeToString(token)
 	csrfB := make([]byte, 32)
 	_, _ = rand.Read(csrfB)
-	sess := adminSession{csrf: base64.RawURLEncoding.EncodeToString(csrfB), created: time.Now(), last: time.Now()}
+	sess := adminSession{csrf: base64.RawURLEncoding.EncodeToString(csrfB), created: time.Now(), last: time.Now(), enrollOnly: enrolled == 0, mustChange: mustChange != 0}
 	sessions.Lock()
 	sessions.m[raw] = sess
 	sessions.Unlock()
 	s.audit("admin", "", "login", "", "", "ok", s.sourceIP(r))
 	http.SetCookie(w, &http.Cookie{Name: "sws_admin", Value: raw, Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.C.PublicBaseURL, "https://"), MaxAge: 28800})
+	if sess.enrollOnly {
+		if sess.mustChange {
+			http.Redirect(w, r, "/admin/password", http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, "/admin/totp/enroll", http.StatusSeeOther)
+		}
+		return
+	}
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 func (s *Server) loginLocked(ip string) bool {
@@ -303,11 +362,45 @@ func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) (adminSess
 		return adminSession{}, false
 	}
 	v.last = now
+	// Re-check enrollment state so an out-of-band reset immediately downgrades existing sessions.
+	var enrolled, mustChange int
+	if err := s.S.DB.QueryRow(`SELECT totp_enrolled,must_change_password FROM admins WHERE id=1`).Scan(&enrolled, &mustChange); err == nil {
+		if enrolled != 0 && v.enrollOnly {
+			delete(sessions.m, ck.Value)
+			http.SetCookie(w, &http.Cookie{Name: "sws_admin", Value: "", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return adminSession{}, false
+		}
+		if enrolled == 0 {
+			v.enrollOnly = true
+		}
+		v.mustChange = mustChange != 0
+	}
 	sessions.m[ck.Value] = v
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
 		if subtle.ConstantTimeCompare([]byte(r.Form.Get("csrf")), []byte(v.csrf)) != 1 {
 			errOut(w, 403, "csrf rejected")
+			return adminSession{}, false
+		}
+	}
+	if v.enrollOnly {
+		path := r.URL.Path
+		allowed := path == "/admin/password" || path == "/admin/totp/enroll" || path == "/admin/logout"
+		if !allowed {
+			if v.mustChange {
+				http.Redirect(w, r, "/admin/password", http.StatusSeeOther)
+			} else {
+				http.Redirect(w, r, "/admin/totp/enroll", http.StatusSeeOther)
+			}
+			return adminSession{}, false
+		}
+		if v.mustChange && path != "/admin/password" && path != "/admin/logout" {
+			http.Redirect(w, r, "/admin/password", http.StatusSeeOther)
+			return adminSession{}, false
+		}
+		if !v.mustChange && path != "/admin/totp/enroll" && path != "/admin/logout" {
+			http.Redirect(w, r, "/admin/totp/enroll", http.StatusSeeOther)
 			return adminSession{}, false
 		}
 	}
@@ -331,54 +424,5 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "sws_admin", Value: "", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	s.audit("admin", "", "logout", "", "", "ok", s.sourceIP(r))
 	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
-}
-func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
-		return
-	}
-	const form = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>录入凭据</title><h1>录入凭据</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>命名空间 <input name="ns" value="default" required></label><label>标签 <input name="label" required></label><label>平台 <select name="provider"><option>generic</option><option>cloudflare-token</option><option>cloudflare-global-key</option><option>github-pat</option><option>gitea-token</option></select></label><label>类型 <select name="type"><option>token</option><option>api_key</option><option>login</option><option>webhook</option><option>note</option></select></label><label>允许主机（逗号分隔） <input name="hosts" autocomplete="off"></label><label>自定义 Header 模板 JSON <input name="headers" autocomplete="off"></label><label>验证 URL / Gitea base_url <input name="base_url" autocomplete="off"></label><label>保存前验证 <input type="checkbox" name="verify"></label><label>允许私网 <input type="checkbox" name="allow_private"></label><label>允许 HTTP <input type="checkbox" name="allow_http"></label><label>用户名 <input name="username" autocomplete="off"></label><label>值 <input type="password" name="value" autocomplete="off" required></label><label>允许解析 <input type="checkbox" name="allow_resolve"></label><button>保存</button></form></html>`
-	if r.Method == http.MethodGet {
-		render(w, form, map[string]string{"CSRF": sess.csrf})
-		return
-	}
-	if r.Method != http.MethodPost {
-		errOut(w, 405, "method not allowed")
-		return
-	}
-	_ = r.ParseForm()
-	q := SecretRequest{NS: r.Form.Get("ns"), Label: r.Form.Get("label"), Provider: r.Form.Get("provider"), Type: r.Form.Get("type"), Username: r.Form.Get("username"), Value: r.Form.Get("value"), Bindings: Binding{AllowResolve: r.Form.Get("allow_resolve") == "on", AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"}}
-	for _, host := range strings.Split(r.Form.Get("hosts"), ",") {
-		if host = strings.TrimSpace(host); host != "" {
-			q.Bindings.Hosts = append(q.Bindings.Hosts, host)
-		}
-	}
-	if raw := strings.TrimSpace(r.Form.Get("headers")); raw != "" {
-		if json.Unmarshal([]byte(raw), &q.Bindings.Headers) != nil {
-			errOut(w, 400, "invalid header templates")
-			return
-		}
-	}
-	if q.Provider == "gitea-token" && len(q.Bindings.Hosts) == 0 {
-		if u, e := url.Parse(r.Form.Get("base_url")); e == nil && u.Host != "" {
-			q.Bindings.Hosts = []string{u.Host}
-		}
-	}
-	if q.NS == "" || q.Label == "" || q.Value == "" {
-		errOut(w, 400, "invalid request")
-		return
-	}
-	if r.Form.Get("verify") == "on" {
-		if e := s.verifySecret(q, r.Form.Get("base_url")); e != nil {
-			errOut(w, 400, e.Error())
-			return
-		}
-	}
-	if _, e := s.save(q, false, ""); e != nil {
-		errOut(w, 500, "internal error")
-		return
-	}
-	s.audit("admin", q.NS, "write", "", "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }
 func render(w http.ResponseWriter, src string, data any) { panel.Render(w, src, data) }

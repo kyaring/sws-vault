@@ -35,7 +35,7 @@ Only after separate approval use `--apply`. `ROOT=/temporary/fake-root` redirect
 1. Build and review the artifacts. Run `install.sh --apply` only after the host operator approves the real paths and account creation.
 2. Review ownership and modes: `/etc/sws-vault/master.key` must be owned by `sws-vault:sws-vault` and mode `0600`; `/var/lib/sws-vault` must be private to the service account.
 3. The installer intentionally does not enable or start the unit. After the network rule is approved, run `sudo systemctl daemon-reload`, then an operator may run `sudo systemctl enable --now sws-vault` and check `systemctl status sws-vault` and `journalctl -u sws-vault`.
-4. Initialize the admin interactively from a trusted terminal as the service account, using the service's environment paths: `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init`. Store the displayed TOTP enrollment URI securely and do not paste it into logs or tickets. Choose a unique test password and enroll TOTP.
+4. Initialize the admin interactively from a trusted terminal as the service account, using the service's environment paths: `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init`. The command sets only the password; after signing in, change the generated initial password if prompted, then scan the QR code in the browser to enroll TOTP. The pending code expires after 10 minutes.
 5. Open `http://192.168.20.132:9531/admin` directly from the LAN. HTTP is not encrypted; do not enter production credentials or use this test deployment over an untrusted network.
 6. Verify `curl --fail http://192.168.20.132:9531/healthz`, inspect service logs, and run a test secret create/resolve/list workflow. Confirm list/panel/log/audit outputs do not reveal secret values. Resolve intentionally returns plaintext `value` and bound `username`; keep that endpoint's scope and binding gate restrictive.
 
@@ -68,3 +68,12 @@ Stop and disable the service only after confirming it is no longer needed. Remov
 - This LAN test deployment has no TLS. Use fake credentials only; do not configure reverse proxies or public access.
 - If a key is lost or corrupted, stop the service and restore the matching key versions and database from separately protected copies. Do not generate a replacement key for an existing database; old ciphertext will not decrypt.
 - When a reverse proxy is introduced in a later approved design, configure `SWSV_TRUSTED_PROXY_CIDRS` to exact proxy peer CIDRs. Without it, forwarding headers are ignored and one WARN is emitted per process.
+
+
+## 快速上手
+
+1. 在可信终端执行 `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init --generate`，保存一次性显示的初始密码。
+2. 在内网浏览器打开 `http://192.168.20.132:9531/admin` 登录；按提示修改初始密码，并扫描网页二维码完成 TOTP。
+3. 点击「新建」，选择平台、粘贴密钥值，可选关联已有项目后保存；结果页不会回显密钥值。
+4. 点击「接入项目」，填写项目名、选择要提供给项目的密钥并生成；立即复制一次性显示的 client token 和配置示例。
+5. 在项目环境中配置 `SWSV_URL`、`SWSV_TOKEN`、`SWSV_NS`，使用 `swsvault run` 或 `git-credential` 调用。
