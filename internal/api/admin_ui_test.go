@@ -57,7 +57,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	paths := []string{
 		"/admin/login", "/admin/", "/admin/secrets/new", "/admin/quick/project",
 		"/admin/quick/project?project=ui-test&client=default", "/admin/advanced", "/admin/advanced/secrets",
-		"/admin/namespaces", "/admin/clients", "/admin/audit", "/admin/intents/new",
+		"/admin/projects", "/admin/projects/new", "/admin/clients", "/admin/audit", "/admin/intents/new",
 		"/admin/secrets/missing/bindings", "/admin/not-a-route", "/i/" + intentToken,
 	}
 	for _, path := range paths {
@@ -96,7 +96,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 			if (path == "/admin/password" || path == "/admin/advanced" || path == "/admin/advanced/secrets") && strings.Contains(body, `action="/admin/logout"`) {
 				t.Errorf("%s body contains logout form", path)
 			}
-			if (path == "/admin/clients" || path == "/admin/namespaces" || path == "/admin/intents/new") && strings.Contains(body, `class="bar"><button class="btn block"`) {
+			if (path == "/admin/clients" || path == "/admin/projects" || path == "/admin/intents/new") && strings.Contains(body, `class="bar"><button class="btn block"`) {
 				t.Errorf("%s advanced action incorrectly uses sticky bar", path)
 			}
 			if path == "/admin/quick/project?project=ui-test&client=default" && (!strings.Contains(body, `class="back" href="/admin/quick/project">‹ 上一步`) || strings.Contains(body, `>返回上一步</a>`) || strings.Contains(body, `>取消</a>`)) {

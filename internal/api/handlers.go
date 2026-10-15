@@ -213,6 +213,10 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 403, "forbidden")
 		return
 	}
+	if bd.NoClientAccess {
+		errOut(w, 403, "forbidden")
+		return
+	}
 	if len(bd.AllowedClients) > 0 {
 		allowed := false
 		for _, clientID := range bd.AllowedClients {

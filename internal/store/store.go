@@ -70,8 +70,51 @@ func (s *Store) Migrate() error {
 			}
 		}
 	}
+	if err := addColumnsIfMissing(s.DB, "namespaces", [][2]string{
+		{"description", `ALTER TABLE namespaces ADD COLUMN description TEXT NOT NULL DEFAULT ''`},
+	}); err != nil {
+		return err
+	}
+	if err := addColumnsIfMissing(s.DB, "clients", [][2]string{
+		{"note", `ALTER TABLE clients ADD COLUMN note TEXT NOT NULL DEFAULT ''`},
+	}); err != nil {
+		return err
+	}
 	if _, err := s.DB.Exec(`UPDATE schema_version SET version=2 WHERE version<2; INSERT INTO namespaces(id,name,created_at) VALUES('_unassigned','_unassigned',strftime('%Y-%m-%dT%H:%M:%SZ','now')) ON CONFLICT(name) DO NOTHING`); err != nil {
 		return err
+	}
+	return nil
+}
+
+// addColumnsIfMissing 幂等地补齐列：只在 PRAGMA table_info 里没有该列时才 ALTER。
+// 旧库升级后原有行不变（新列取 DEFAULT），重复执行不报错。
+func addColumnsIfMissing(db *sql.DB, table string, columns [][2]string) error {
+	present := map[string]bool{}
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		present[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range columns {
+		if present[column[0]] {
+			continue
+		}
+		if _, err := db.Exec(column[1]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -150,6 +150,18 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		s.adminNamespaces(w, r)
 		return
 	}
+	if r.URL.Path == "/admin/projects" {
+		s.adminProjects(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/projects/new" {
+		s.adminProjectNew(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/projects/") {
+		s.adminProjectRoute(w, r)
+		return
+	}
 	if r.URL.Path == "/admin/clients" {
 		s.adminClients(w, r)
 		return
@@ -227,7 +239,7 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		NS       string
 		Provider string
 	}{sess.csrf, items, displayNSFilter, providerFilter}
-	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
+	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>所有密钥</title><h1>所有密钥</h1><p class="lead">这里只显示名称、平台、预览和指纹，密钥值永远不会出现在面板上。</p><div class="group"><a class="row" href="/admin/"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">返回首页</span></a><a class="row" href="/admin/secrets/new"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="t">新建密钥<small>存一个密钥到项目里</small></span></a><a class="row" href="/admin/projects"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">项目<small>建项目、放密钥、发通行证</small></span></a><a class="row" href="/admin/audit"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/clients"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">客户端</span></a></div><details><summary>筛选</summary><form method="get" action="/admin/advanced/secrets"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button class="btn secondary">筛选</button></form></details><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
 	render(w, page, data)
 }
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -485,6 +497,9 @@ func renderStatus(w http.ResponseWriter, status int, src string, data any) {
 			}
 			if strings.Contains(src, `<title>保险库</title>`) {
 				shell = `<body><header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form></header><main class="page">`
+			}
+			if strings.Contains(src, `<title>项目详情</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/projects">‹ 项目</a></header><main class="page">`
 			}
 			if strings.Contains(src, `name="secret"`) && strings.Contains(src, `<title>接入项目</title>`) {
 				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/quick/project">‹ 上一步</a></header><main class="page">`

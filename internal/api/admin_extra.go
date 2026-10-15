@@ -19,8 +19,7 @@ import (
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -45,25 +44,13 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", name, "project-create", "", "", "ok", s.sourceIP(r))
-		http.Redirect(w, r, "/admin/namespaces", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/projects/"+name, http.StatusSeeOther)
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT name,created_at FROM namespaces WHERE name<>'_unassigned' ORDER BY name`)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	defer rows.Close()
-	type item struct{ Name, Created string }
-	var list []item
-	for rows.Next() {
-		var v item
-		if rows.Scan(&v.Name, &v.Created) == nil {
-			list = append(list, v)
-		}
-	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>项目</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><button class="btn block">创建</button></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	// 旧的「项目」页已并入 /admin/projects，浏览时直接跳转。
+	http.Redirect(w, r, "/admin/projects", http.StatusSeeOther)
 }
+
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
@@ -191,7 +178,10 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 		if username == mask(existing.Username) {
 			username = existing.Username
 		}
-		b, _ := json.Marshal(Binding{Username: username, AllowedClients: splitCSV(r.Form.Get("allowed_clients")), Hosts: hosts, Headers: headers, AllowResolve: r.Form.Get("allow_resolve") == "on", AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"})
+		allowedClients := splitCSV(r.Form.Get("allowed_clients"))
+		// 原来「尚未授权给任何接入方」的密钥，留空保存后必须保持这个状态；
+		// 一旦填了 allowed_clients，就表示改为显式授权。
+		b, _ := json.Marshal(Binding{Username: username, AllowedClients: allowedClients, NoClientAccess: existing.NoClientAccess && len(allowedClients) == 0, Hosts: hosts, Headers: headers, AllowResolve: r.Form.Get("allow_resolve") == "on", AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"})
 		res, e := s.S.DB.Exec(`UPDATE secrets SET bindings=? WHERE id=? AND status='active'`, string(b), id)
 		if e != nil {
 			adminErrOut(w, 500, "internal error")
@@ -214,7 +204,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	var bd Binding
 	_ = json.Unmarshal([]byte(b), &bd)
 	headers, _ := json.Marshal(bd.Headers)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改使用范围：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改使用范围：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"><small class="hint">{{if .NoClientAccess}}当前尚未授权给任何接入方；留空保存会保持这个状态，填入接入方 ID 才放行。{{else}}留空表示项目内所有接入方都能用。{{end}}</small></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP, "NoClientAccess": bd.NoClientAccess})
 	_ = ns
 	_ = providerName
 }
