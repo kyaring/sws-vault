@@ -1,0 +1,26 @@
+[Unit]
+Description=SWS Vault (internal test deployment)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sws-vault
+Group=sws-vault
+Environment=SWSV_DATA_DIR=/var/lib/sws-vault
+Environment=SWSV_DB_PATH=/var/lib/sws-vault/vault.db
+Environment=SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key
+Environment=SWSV_LISTEN=192.168.20.132:9531
+Environment=SWSV_PUBLIC_BASE_URL=http://192.168.20.132:9531
+ExecStart=/usr/local/bin/swsvault serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sws-vault
+
+[Install]
+WantedBy=multi-user.target

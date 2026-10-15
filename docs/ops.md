@@ -1,73 +1,70 @@
-# Operations draft (not deployed)
+# SWS Vault S-6 test deployment runbook
 
-This document is a deployment proposal only. This development task does not create systemd units, modify `/etc` or `/var/lib`, open network ports, or install the binary.
+This runbook describes a **test-only, LAN-only** deployment on `wjy5010u`. It is not a production deployment recipe. The test service binds only to `192.168.20.132:9531`; it must never bind to `0.0.0.0:9531` or `[::]:9531` because this node has public IPv6. Do not add a reverse proxy or expose this service to the public internet. HTTP is plaintext, so use fake/test credentials only until TLS and the proxy trust boundary are reviewed.
 
-## Runtime layout
+## Network and firewall
 
-- Run one dedicated service account with write access only to the chosen SWS Vault data directory.
-- Keep `master.key` and versioned `master.key.vN` files mode 0600. Store them separately from the SQLite database and do not place either in the repository, web root, or backup bundle together.
-- Keep the listener on `127.0.0.1:9531` unless a reviewed deployment card specifies another private binding.
-- Argon2id password hashing and provider pre-save verification are implemented. Do not deploy until the full acceptance gate passes and the actual host’s TLS/reverse-proxy, backup, key-custody, monitoring, and recovery procedures have been reviewed.
+The listener is `192.168.20.132:9531`; `SWSV_PUBLIC_BASE_URL` is `http://192.168.20.132:9531`. The admin panel is opened directly from a LAN browser at `http://192.168.20.132:9531/admin`—no SSH tunnel. `install.sh` never changes the firewall and never enables or starts the unit.
 
-## Illustrative systemd unit
+The node's nftables input chain defaults to drop. After separate approval, allow only the LAN subnet. First inspect the actual table/chain names (`nft list ruleset`) and confirm `inet filter input` exists. Runtime rule:
 
-```ini
-[Unit]
-Description=SWS Vault
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=swsvault
-Group=swsvault
-WorkingDirectory=/opt/sws-vault
-Environment=SWSV_DATA_DIR=/var/lib/sws-vault
-Environment=SWSV_LISTEN=127.0.0.1:9531
-Environment=SWSV_PUBLIC_BASE_URL=https://vault.example.invalid
-ExecStart=/opt/sws-vault/swsvault serve
-Restart=on-failure
-RestartSec=3
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/sws-vault
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo nft add rule inet filter input ip saddr 192.168.20.0/24 tcp dport 9531 accept comment "sws-vault-test"
+sudo nft -a list chain inet filter input
 ```
 
-This is a draft example, not an installed unit. Review filesystem paths, user/group, and hardening against the actual deployment before use.
+Persist the same rule in `/etc/nftables.conf` in the `inet filter input` chain **before** the final drop/reject rule, then validate and apply with `sudo nft -c -f /etc/nftables.conf` followed by `sudo nft -f /etc/nftables.conf`. Do not replace the existing ruleset wholesale without review. Confirm from a LAN client that TCP/9531 is reachable and from outside the LAN that it is not.
 
-## Reverse proxy
+Rollback: identify the rule handle from `nft -a list chain inet filter input`, then run `sudo nft delete rule inet filter input handle HANDLE`. Remove the matching `ip saddr 192.168.20.0/24 tcp dport 9531 accept comment "sws-vault-test"` line from `/etc/nftables.conf`, validate with `nft -c -f`, and reload the file. Substitute the actual table/chain if the host's ruleset differs. The install scripts do not perform any of these firewall actions.
 
-- Terminate TLS at a trusted proxy and keep the upstream listener private.
-- If deployed behind a reverse proxy, you must configure `SWSV_TRUSTED_PROXY_CIDRS` to the proxy peer CIDRs. Never trust arbitrary caller-supplied forwarding headers. Without this setting, `X-Forwarded-For` is ignored and the socket peer IP (often the proxy) is used for login lockout; this can lock out the administrator. The service emits one WARN per process if it receives this header without trusted proxy CIDRs.
-- Preserve `Cache-Control: no-store` on resolve responses; do not cache `/v1`, `/admin`, `/mcp`, or `/i` responses.
-- Do not log authorization headers, request bodies, form bodies, or response bodies. Access logs should omit query strings on one-time intent links because the path token is a bearer capability.
-- Do not enable public exposure until the full acceptance gate passes and the actual host TLS/reverse-proxy, backup, key-custody, monitoring, and recovery procedures have been reviewed.
+## Build and dry-run
 
-## Backups
+From the repository checkout, run `make build` and inspect `./bin/swsvault version`. All four scripts default to dry-run:
 
-1. Quiesce writes or use SQLite's consistent backup API to create a database snapshot.
-2. Back up the database separately from the master key files. Encrypt and access-control each backup independently.
-3. Preserve all versioned master key files still referenced by `secrets.key_version`; removing an old key before all DEKs are rewrapped makes records unreadable.
-4. Test restore in an isolated temporary directory using fake test records before relying on the backup.
+```sh
+./deploy/install.sh
+./deploy/backup.sh
+./deploy/upgrade.sh
+./deploy/rollback.sh
+```
 
-## Recovery outline
+Only after separate approval use `--apply`. `ROOT=/temporary/fake-root` redirects filesystem paths into a test tree; it skips OS user management, systemd operations, and network health checks. Never use `--apply` without `ROOT` during package testing. The install script installs `/usr/local/bin/swsvault`, saves a differing previous binary as `.prev`, installs the service unit, and creates a key only if absent. Existing `master.key` is never replaced. The service is not enabled or started automatically. The installer only prints the firewall reminder.
 
-1. Restore the database to a private directory with restrictive permissions.
-2. Restore the matching versioned key files separately and verify mode 0600.
-3. Run the binary's local health check and read-only metadata tests on loopback.
-4. Verify old records can be decrypted through an authorized test resolve and that list/admin/audit/log outputs do not contain the sentinel.
-5. Switch traffic only after the security review and the task acceptance script pass. Recovery is not complete if a key version referenced by the database is missing.
+## First-time installation and admin enrollment
 
-## Build and version
+1. Build and review the artifacts. Run `install.sh --apply` only after the host operator approves the real paths and account creation.
+2. Review ownership and modes: `/etc/sws-vault/master.key` must be owned by `sws-vault:sws-vault` and mode `0600`; `/var/lib/sws-vault` must be private to the service account.
+3. The installer intentionally does not enable or start the unit. After the network rule is approved, run `sudo systemctl daemon-reload`, then an operator may run `sudo systemctl enable --now sws-vault` and check `systemctl status sws-vault` and `journalctl -u sws-vault`.
+4. Initialize the admin interactively from a trusted terminal as the service account, using the service's environment paths: `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init`. Store the displayed TOTP enrollment URI securely and do not paste it into logs or tickets. Choose a unique test password and enroll TOTP.
+5. Open `http://192.168.20.132:9531/admin` directly from the LAN. HTTP is not encrypted; do not enter production credentials or use this test deployment over an untrusted network.
+6. Verify `curl --fail http://192.168.20.132:9531/healthz`, inspect service logs, and run a test secret create/resolve/list workflow. Confirm list/panel/log/audit outputs do not reveal secret values. Resolve intentionally returns plaintext `value` and bound `username`; keep that endpoint's scope and binding gate restrictive.
 
-Build the executable with `make build`; the target injects the current 12-character Git commit into `swsvault version`. Verify with `./bin/swsvault version` and `git rev-parse --short=12 HEAD`.
+## Backup
 
-## Key rotation maintenance
+`backup.sh` uses Python's SQLite online backup API to create a consistent snapshot at `/var/backups/sws-vault/vault-YYYYMMDD-HHMMSS.sqlite3`, mode `0600`, retaining the latest 14 snapshots. It does not copy the master key. Back up key material separately through an approved offline custody process; never place it beside the database backup. Run a restore drill in an isolated directory before relying on backups.
 
-`swsvault admin rotate-kek` must be run with the service stopped so no process continues using an in-memory keyring from before rotation. It writes a new versioned key file with exclusive creation and mode 0600, then transactionally rewraps each DEK, re-encrypts the secret with the new key-version AAD, and recalculates the fingerprint. If rotation fails, keep all key versions and restore service only after a read-only resolve smoke test confirms old values remain readable.
+```sh
+./deploy/backup.sh                 # dry-run
+./deploy/backup.sh --apply         # approved host operation only
+```
+
+## Upgrade and rollback
+
+Build the new binary and verify its version before use. `upgrade.sh` defaults to dry-run; with approval, `upgrade.sh --apply` first makes a database backup, preserves the current binary as `.prev`, installs the new binary, restarts the service, and checks `/healthz` plus the installed binary's `version` output. Confirm the running service's startup time and logs as part of the operator check. If health checks fail, run `rollback.sh --apply` to restore `.prev`, restart, and check health/version again. `ROOT=/temporary/fake-root` performs file operations only and skips service/network checks.
+
+```sh
+./deploy/upgrade.sh
+./deploy/rollback.sh
+```
+
+## Uninstall
+
+Stop and disable the service only after confirming it is no longer needed. Remove the unit and executable through a separately reviewed change. Do not automatically delete `/var/lib/sws-vault`, `/etc/sws-vault/master.key`, or backups: preserve them until an authorized retention decision and successful recovery/export. Destroy key material only after confirming that all required data has been retired.
+
+## Security and recovery notes
+
+- Keep the master key separate from database backups, mode `0600`; never print it or place it in the repository.
+- `resolve` returns plaintext `value` **and** bound `username`, only when the client has `resolve` scope and the binding allows resolve (and any client allowlist matches). It is an explicit plaintext boundary.
+- This LAN test deployment has no TLS. Use fake credentials only; do not configure reverse proxies or public access.
+- If a key is lost or corrupted, stop the service and restore the matching key versions and database from separately protected copies. Do not generate a replacement key for an existing database; old ciphertext will not decrypt.
+- When a reverse proxy is introduced in a later approved design, configure `SWSV_TRUSTED_PROXY_CIDRS` to exact proxy peer CIDRs. Without it, forwarding headers are ignored and one WARN is emitted per process.

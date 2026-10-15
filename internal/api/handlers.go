@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,6 +63,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	s.audit(c.ID, c.NS, "write", m.ID, "", "ok", s.sourceIP(r))
+	slog.Info("secret stored", "namespace", c.NS, "secret_id", m.ID)
 	jsonOut(w, 201, m)
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
@@ -216,5 +218,6 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 	defer wipe(v)
 	_, _ = s.S.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	s.audit(c.ID, c.NS, "resolve", id, "", "ok", s.sourceIP(r))
+	slog.Info("secret resolved", "namespace", c.NS, "secret_id", id, "client_id", c.ID)
 	jsonOut(w, 200, map[string]string{"value": string(v), "username": bd.Username})
 }
