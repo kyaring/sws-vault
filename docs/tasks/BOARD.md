@@ -19,4 +19,4 @@
 | RV-SV-20261016-01 | 审核：UI v1（01+02）功能与安全全量审核 @a6258a5 | RikkaHub-1 | done：CHANGES REQUESTED（Hark 02:40 复核确认，评 99） | 阻塞 admin.js 404；待裁定项判为卡面缺陷 → SV-20261016-03 | 2026-10-16 02:40 |
 | SV-20261016-03 | 修复 admin.js 404（RV-01 阻塞项）+ UI 三条 Low | GPT | merged dfb7759 + deployed dfb77598b566（OPC 02:59 批准，03:00 部署） | 03:0x RikkaHub-1 复审通过（阻塞项已修：admin.js 200 + 遍历断言；建议 1–3 已处理；1 建议＝交付消息缺逐项/验收结果）；报告 docs/reviews/SV-20261016-03-review.md；被审提交 875aa04 | 2026-10-16 03:01 |
 | BL-upgrade-healthz | backlog：upgrade.sh 重启后立即 curl，退出码 7（第 2 次复现，10-16 03:00），需加入重试/等待 | — | backlog | — | 2026-10-16 03:01 |
-| SV-20261016-04 | 接入项目默认只能代发，取明文可选，可锁来源 IP（OPC 03:24） | RikkaHub-1 | merged（verified @c3b2ba2，OPC 04:11 批准合并；未部署） | feat/client-fetch-only | 2026-10-16 04:12 |
+| SV-20261016-04 | 接入项目默认只能代发，取明文可选，可锁来源 IP（OPC 03:24） | RikkaHub-1 | merged 2baae76 + deployed cb86accd754c（OPC 04:14 批准） | feat/client-fetch-only | 2026-10-16 04:16 |
