@@ -100,3 +100,5 @@ The following results were collected on branch `feat/s6-quickflow` after impleme
 The first `sh docs/process/check-task.sh SV-20261015-06` run during the edit phase exited 1 only because the worktree had uncommitted changes; it reported baseline `f7304ec`, changed scope `1113` non-test lines / `16` files within the `2200` / `32` limits, and the embedded acceptance commands passed. The clean-worktree rerun result is recorded in the follow-up verification entry below.
 
 Follow-up clean-worktree verification: `sh docs/process/check-task.sh SV-20261015-06` exited **0** after commit `4e7b4b6`; output confirmed baseline `f7304ec`, allowed change scope, `1116` non-test lines / `16` files within the `2200` / `32` limits, `git diff --check`, and the embedded acceptance command all passed.
+
+Final clean-worktree rerun before this note was appended: `sh docs/process/check-task.sh SV-20261015-06` exited **0**; baseline `f7304ec`, scope `1118` non-test lines / `16` files (limits `2200` / `32`), all package tests and the embedded acceptance command passed. The only change after that run is this verification note.
