@@ -35,7 +35,7 @@ Only after separate approval use `--apply`. `ROOT=/temporary/fake-root` redirect
 1. Build and review the artifacts. Run `install.sh --apply` only after the host operator approves the real paths and account creation.
 2. Review ownership and modes: `/etc/sws-vault/master.key` must be owned by `sws-vault:sws-vault` and mode `0600`; `/var/lib/sws-vault` must be private to the service account.
 3. The installer intentionally does not enable or start the unit. After the network rule is approved, run `sudo systemctl daemon-reload`, then an operator may run `sudo systemctl enable --now sws-vault` and check `systemctl status sws-vault` and `journalctl -u sws-vault`.
-4. Initialize the admin interactively from a trusted terminal as the service account, using the service's environment paths: `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init`. Store the displayed TOTP enrollment URI securely and do not paste it into logs or tickets. Choose a unique test password and enroll TOTP.
+4. Initialize the admin from a trusted terminal as the service account, using the service's environment paths. `swsvault admin init` (no argument) interactively prompts for a password; use `swsvault admin init --generate` instead to generate a random initial password that is printed only once. Both modes initialize the password only and do not generate or print TOTP material in the terminal. For example: `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init`. If `--generate` was used, the first login forces a password change. Then scan the QR code in the browser to enroll TOTP; the pending code expires after 10 minutes.
 5. Open `http://192.168.20.132:9531/admin` directly from the LAN. HTTP is not encrypted; do not enter production credentials or use this test deployment over an untrusted network.
 6. Verify `curl --fail http://192.168.20.132:9531/healthz`, inspect service logs, and run a test secret create/resolve/list workflow. Confirm list/panel/log/audit outputs do not reveal secret values. Resolve intentionally returns plaintext `value` and bound `username`; keep that endpoint's scope and binding gate restrictive.
 
@@ -68,3 +68,37 @@ Stop and disable the service only after confirming it is no longer needed. Remov
 - This LAN test deployment has no TLS. Use fake credentials only; do not configure reverse proxies or public access.
 - If a key is lost or corrupted, stop the service and restore the matching key versions and database from separately protected copies. Do not generate a replacement key for an existing database; old ciphertext will not decrypt.
 - When a reverse proxy is introduced in a later approved design, configure `SWSV_TRUSTED_PROXY_CIDRS` to exact proxy peer CIDRs. Without it, forwarding headers are ignored and one WARN is emitted per process.
+
+
+## 快速上手
+
+1. 在可信终端执行 `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init --generate`，保存一次性显示的初始密码。`admin init`（不带参数）是交互式设置密码；`admin init --generate` 则随机生成初始密码并只显示一次。两种方式都只初始化密码，不会在终端生成或输出 TOTP 秘钥。
+2. 在内网浏览器打开 `http://192.168.20.132:9531/admin` 登录；按提示修改初始密码，并扫描网页二维码完成 TOTP。
+3. 点击「新建」，选择平台、粘贴密钥值，可选关联已有项目后保存；结果页不会回显密钥值。 选择 Gitea 时，还需填写完整的「Gitea 地址」（例如 `https://git.example.com`）；默认仅允许 HTTPS，只有明确需要时才勾选「允许 HTTP」。系统只会把该地址的主机名加入允许发往的域名。
+4. 点击「接入项目」，填写项目名、选择要提供给项目的密钥并生成；立即复制一次性显示的 client token 和配置示例。
+5. 在项目环境中配置 `SWSV_URL`、`SWSV_TOKEN`、`SWSV_NS`，使用 `swsvault run` 或 `git-credential` 调用。
+
+
+## SV-20261015-06 review rework verification
+
+The following results were collected on branch `feat/s6-quickflow` after implementing the review findings. They are development/test results only; no deployment or live service operation was performed.
+
+| Command | Exit | Key output |
+|---|---:|---|
+| `go test -count=1 ./...` | 0 | All packages with tests passed. |
+| `go test -count=1 -race -shuffle=on ./...` (run 1) | 0 | All packages with tests passed. |
+| `go test -count=1 -race -shuffle=on ./...` (run 2) | 0 | All packages with tests passed. |
+| `go test -count=1 -race -shuffle=on ./...` (run 3) | 0 | All packages with tests passed. |
+| `sh docs/process/acceptance.sh` | 0 | Normal and race test suites passed. |
+| `go test -count=1 ./internal/api` | 0 | `ok github.com/kyaring/sws-vault/internal/api`; includes write-path guard, project-scope copy, and QR fallback tests. |
+| `go vet ./...` | 0 | No diagnostics. |
+| `gofmt -l .` | 0 | No files listed. |
+| `bash -n deploy/*.sh` | 0 | No syntax errors. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `shellcheck deploy/*.sh` | N/A | `shellcheck` is not installed in the environment. |
+
+The first `sh docs/process/check-task.sh SV-20261015-06` run during the edit phase exited 1 only because the worktree had uncommitted changes; it reported baseline `f7304ec`, changed scope `1113` non-test lines / `16` files within the `2200` / `32` limits, and the embedded acceptance commands passed. The clean-worktree rerun result is recorded in the follow-up verification entry below.
+
+Follow-up clean-worktree verification: `sh docs/process/check-task.sh SV-20261015-06` exited **0** after commit `4e7b4b6`; output confirmed baseline `f7304ec`, allowed change scope, `1116` non-test lines / `16` files within the `2200` / `32` limits, `git diff --check`, and the embedded acceptance command all passed.
+
+Final clean-worktree rerun before this note was appended: `sh docs/process/check-task.sh SV-20261015-06` exited **0**; baseline `f7304ec`, scope `1118` non-test lines / `16` files (limits `2200` / `32`), all package tests and the embedded acceptance command passed. The only change after that run is this verification note.

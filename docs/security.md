@@ -28,3 +28,10 @@ Plaintext is necessarily present while encrypting/decrypting in process memory. 
 ## Password hashing
 
 Administrator passwords use Argon2id via the explicitly permitted `golang.org/x/crypto` dependency, with 3 iterations, 64 MiB memory, 2 lanes, a 16-byte random salt, and a 32-byte output. Password input is read from stdin without terminal echo. TOTP seeds and session CSRF material are not written to logs.
+
+
+## Unassociated secrets and first TOTP enrollment
+
+Secrets stored with the reserved `_unassigned` namespace are not returned by client list operations and cannot be resolved, run through the CLI, used by git-credential, or injected into outbound requests. Attempts behave like a missing secret. Moving one into a project changes the namespace-bound AAD and therefore re-encrypts the value and wraps its DEK for the destination namespace transactionally. A selected client is explicitly allowed; unselected secrets remain unassociated. The project onboarding page shows the client token only once.
+
+During initial browser enrollment, an unenrolled administrator may authenticate with the password alone only to receive an `enroll_only` session. That session can access only password change, TOTP enrollment, and logout. The pending TOTP secret expires after 10 minutes and is replaced on page refresh; after confirmation the secret and QR are never shown again, and the session is revoked. This window is permitted only on the internal test network and still requires the initial password. Mitigate risk by keeping the listener bound to the LAN address, restricting inbound access to the LAN subnet, choosing a strong generated password, completing enrollment promptly, and not exposing the service publicly before HTTPS and proxy controls are ready.

@@ -6,6 +6,7 @@ import (
 	"github.com/kyaring/sws-vault/internal/config"
 	vaultcrypto "github.com/kyaring/sws-vault/internal/crypto"
 	"github.com/kyaring/sws-vault/internal/store"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -142,5 +143,44 @@ func TestGenerateReturnsMetadataOnly(t *testing.T) {
 	}
 	if _, ok := m["value"]; ok {
 		t.Fatal("generated response contains value field")
+	}
+}
+
+func TestUnassignedClientCannotCreateRotateOrGenerateSecrets(t *testing.T) {
+	s, st, token, _ := testServer(t, "secrets:write")
+	secret, err := s.save(SecretRequest{NS: unassignedNS, Label: "write-guard-fake", Provider: "generic", Type: "token", Value: "UNASSIGNED-WRITE-SENTINEL"}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`UPDATE clients SET ns=? WHERE id='c1'`, unassignedNS); err != nil {
+		t.Fatal(err)
+	}
+	checks := []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/secrets", `{"label":"blocked-create","provider":"generic","type":"token","value":"SHOULD-NOT-STORE"}`},
+		{http.MethodPut, "/v1/secrets/" + secret.ID + "/value", `{"value":"SHOULD-NOT-ROTATE"}`},
+		{http.MethodPost, "/v1/generate", `{"label":"blocked-generate","provider":"generic","type":"token","length":24}`},
+	}
+	var notFoundBody string
+	for i, check := range checks {
+		code, body := request(t, s, token, check.method, check.path, check.body)
+		if code != http.StatusNotFound || strings.Contains(body, "SHOULD-NOT") {
+			t.Errorf("%s %s: status=%d body=%q, want not found", check.method, check.path, code, body)
+		}
+		if i == 0 {
+			notFoundBody = body
+		} else if body != notFoundBody {
+			t.Errorf("%s %s leaked a distinct response: %q != %q", check.method, check.path, body, notFoundBody)
+		}
+	}
+	var count int
+	if err := st.DB.QueryRow(`SELECT count(*) FROM secrets WHERE label IN ('blocked-create','blocked-generate')`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("blocked writes created %d secrets", count)
+	}
+	var storedNS string
+	if err := st.DB.QueryRow(`SELECT ns FROM secrets WHERE id=?`, secret.ID).Scan(&storedNS); err != nil || storedNS != unassignedNS {
+		t.Fatalf("rotate changed secret namespace=%q err=%v", storedNS, err)
 	}
 }

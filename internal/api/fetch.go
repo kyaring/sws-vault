@@ -24,7 +24,7 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	ns, id, ok := ref(q.Secret)
-	if !ok || ns != c.NS {
+	if !ok || ns == "_unassigned" || c.NS == "_unassigned" || ns != c.NS {
 		errOut(w, 404, "not found")
 		return
 	}

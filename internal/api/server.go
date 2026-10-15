@@ -89,6 +89,12 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /v1/fetch", s.auth("fetch", s.fetch))
 	s.Mux.HandleFunc("/mcp", s.auth("", s.mcp))
 	s.Mux.HandleFunc("GET /admin/assets/{asset}", func(w http.ResponseWriter, r *http.Request) {
+		// An enroll_only cookie cannot traverse unrelated /admin routes, including static assets.
+		if _, err := r.Cookie("sws_admin"); err == nil {
+			if _, ok := s.adminSession(w, r); !ok {
+				return
+			}
+		}
 		if r.PathValue("asset") != "admin.css" || strings.Contains(r.URL.Path, "..") {
 			http.NotFound(w, r)
 			return

@@ -12,6 +12,10 @@ import (
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request, c Client) {
 	ns := r.URL.Query().Get("ns")
+	if ns == "_unassigned" || c.NS == "_unassigned" {
+		errOut(w, 404, "not found")
+		return
+	}
 	if ns == "" {
 		ns = c.NS
 	}
@@ -41,6 +45,9 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, c Client) {
 	jsonOut(w, 200, map[string]any{"secrets": out})
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request, c Client) {
+	if rejectUnassignedClient(w, r, c) {
+		return
+	}
 	var q SecretRequest
 	if decode(r, &q) != nil {
 		errOut(w, 400, "invalid request")
@@ -67,6 +74,9 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c Client) {
 	jsonOut(w, 201, m)
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
+	if rejectUnassignedClient(w, r, c) {
+		return
+	}
 	var q struct {
 		Value string `json:"value"`
 	}
@@ -91,6 +101,17 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request, c Client) {
 	s.audit(c.ID, c.NS, "rotate", id, "", "ok", s.sourceIP(r))
 	jsonOut(w, 200, m)
 }
+
+// rejectUnassignedClient keeps all write APIs fail-closed for the reserved
+// namespace, even if an operator accidentally creates a client in it.
+func rejectUnassignedClient(w http.ResponseWriter, r *http.Request, c Client) bool {
+	if c.NS != unassignedNS {
+		return false
+	}
+	errOut(w, 404, "not found")
+	return true
+}
+
 func (s *Server) save(q SecretRequest, rotate bool, id string) (Metadata, error) {
 	if err := validateSecret(q); err != nil {
 		return Metadata{}, err
@@ -175,7 +196,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request, c Client) {
 		return
 	}
 	ns, id, ok := ref(q.Secret)
-	if !ok || ns != c.NS {
+	if !ok || ns == "_unassigned" || c.NS == "_unassigned" || ns != c.NS {
 		errOut(w, 404, "not found")
 		return
 	}

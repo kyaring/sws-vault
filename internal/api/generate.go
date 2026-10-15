@@ -18,6 +18,9 @@ type generateRequest struct {
 }
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request, c Client) {
+	if rejectUnassignedClient(w, r, c) {
+		return
+	}
 	var q generateRequest
 	if decode(r, &q) != nil {
 		errOut(w, 400, "invalid request")
