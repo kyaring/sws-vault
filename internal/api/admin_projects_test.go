@@ -221,14 +221,18 @@ func TestProjectClientsShareSecretAndDisableIsIsolated(t *testing.T) {
 	s, _, _, _ := testServer(t, "secrets:list")
 	backend := projectBackend(t)
 	shared := seedProjectSecret(t, s, "proj-c", "shared-fake", "SWSV-PROJ-SHARED", Binding{Hosts: []string{backendHost(backend)}, AllowPrivate: true, AllowHTTP: true})
+	other := seedProjectSecret(t, s, "proj-c", "other-fake", "SWSV-PROJ-OTHER", Binding{Hosts: []string{backendHost(backend)}, AllowPrivate: true, AllowHTTP: true})
 	cookie, csrf := "proj-share-session", "proj-share-csrf"
 	quickProjectSession(cookie, csrf)
 	first := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/proj-c/clients/new", url.Values{"csrf": {csrf}, "name": {"worker-a"}, "secret": {shared.ID}})
 	second := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/proj-c/clients/new", url.Values{"csrf": {csrf}, "name": {"worker-b"}, "secret": {shared.ID}})
-	if first.Code != http.StatusOK || second.Code != http.StatusOK {
-		t.Fatalf("add clients status=%d/%d", first.Code, second.Code)
+	// worker-c 只勾了另一个密钥，因此不该拿到 shared。
+	third := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/proj-c/clients/new", url.Values{"csrf": {csrf}, "name": {"worker-c"}, "secret": {other.ID}})
+	if first.Code != http.StatusOK || second.Code != http.StatusOK || third.Code != http.StatusOK {
+		t.Fatalf("add clients status=%d/%d/%d", first.Code, second.Code, third.Code)
 	}
 	tokenA, tokenB := firstToken(t, first.Body.String()), firstToken(t, second.Body.String())
+	tokenC := firstToken(t, third.Body.String())
 	fetch := func(token string) (int, string) {
 		body, _ := json.Marshal(map[string]any{"secret": "vault:proj-c/" + shared.ID, "method": "GET", "url": backend.URL + "/"})
 		return requestWithToken(t, s, token, http.MethodPost, "/v1/fetch", string(body))
@@ -238,6 +242,10 @@ func TestProjectClientsShareSecretAndDisableIsIsolated(t *testing.T) {
 	}
 	if code, out := fetch(tokenB); code != http.StatusOK {
 		t.Fatalf("worker-b fetch status=%d body=%s", code, out)
+	}
+	// 没勾这个密钥的接入方必须被拒：共享密钥只授权给勾选它的那两张通行证。
+	if code, out := fetch(tokenC); code != http.StatusForbidden {
+		t.Fatalf("worker-c fetched a secret it never selected: status=%d body=%s", code, out)
 	}
 	idA := clientIDByName(t, s, "proj-c", "worker-a")
 	disable := adminPageRequest(s, cookie, http.MethodPost, "/admin/clients/"+idA+"/disable", url.Values{"csrf": {csrf}})
@@ -249,6 +257,9 @@ func TestProjectClientsShareSecretAndDisableIsIsolated(t *testing.T) {
 	}
 	if code, out := fetch(tokenB); code != http.StatusOK {
 		t.Fatalf("worker-b fetch after peer disable status=%d body=%s", code, out)
+	}
+	if code, _ := fetch(tokenC); code != http.StatusForbidden {
+		t.Fatalf("worker-c fetch status=%d, want 403", code)
 	}
 }
 
