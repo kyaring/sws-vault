@@ -17,4 +17,4 @@
 | SV-followups-0607 | 后续建议：Gitea 非默认端口；保留名测试已补；upgrade.sh 重启后立即 curl 未等待（19:48 实测退出码 7，服务实际正常）；SWSV_PUBLIC_BASE_URL 未配置 | — | backlog | 与 UI 卡之后统一开卡 | 2026-10-15 19:50 || SV-20261016-01 | 管理面板 UI v1（按 Hark 设计稿 docs/design/ui/ 实施） | GPT | ready | OPC 01:30 定稿；功能和安全由 RikkaHub-1 审核，UI 由 Hark 验收；规模上限 1800 行 / 30 文件 | 2026-10-16 01:35 |
 | SV-20261016-02 | 返工：UI v1 验收意见整改（同分支 feat/ui-v1） | GPT | delivered @a6258a5（报的是 9e120f6，交付后又 amend） → UI PASS | Hark UI 复验 02:30 PASS（剩 3 条 Low）；功能审核 RV-SV-20261016-01 → RikkaHub-1 | 2026-10-16 02:30 |
 | RV-SV-20261016-01 | 审核：UI v1（01+02）功能与安全全量审核 @a6258a5 | RikkaHub-1 | done：CHANGES REQUESTED（Hark 02:40 复核确认，评 99） | 阻塞 admin.js 404；待裁定项判为卡面缺陷 → SV-20261016-03 | 2026-10-16 02:40 |
-| SV-20261016-03 | 修复：admin.js 404 + UI 三条 Low（feat/ui-v1） | GPT | ready | RikkaHub-1 复审增量，Hark 终签 | 2026-10-16 02:40 |
+| SV-20261016-03 | 修复 admin.js 404（RV-01 阻塞项）+ UI 三条 Low | GPT | reviewed-pass | 03:0x RikkaHub-1 复审通过（阻塞项已修：admin.js 200 + 遍历断言；建议 1–3 已处理；1 建议＝交付消息缺逐项/验收结果）；报告 docs/reviews/SV-20261016-03-review.md；被审提交 875aa04 | 2026-10-16 03:05 |
