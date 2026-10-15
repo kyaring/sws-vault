@@ -118,6 +118,10 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		s.adminEnrollTOTP(w, r)
 		return
 	}
+	if r.URL.Path == "/admin/settings" {
+		s.adminSettings(w, r)
+		return
+	}
 	if r.URL.Path == "/admin/quick/project" {
 		s.adminQuickProject(w, r)
 		return
@@ -144,6 +148,10 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin/secrets/") && strings.HasSuffix(r.URL.Path, "/disable") {
 		s.adminDisableSecret(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/secrets/") && strings.HasSuffix(r.URL.Path, "/clients") {
+		s.adminSecretClients(w, r)
 		return
 	}
 	if r.URL.Path == "/admin/namespaces" {
@@ -491,24 +499,12 @@ func renderStatus(w http.ResponseWriter, status int, src string, data any) {
 	}
 	if !strings.Contains(src, `class="appbar"`) {
 		if loc := panelStartRE.FindStringIndex(src); loc != nil {
-			shell := `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
-			if strings.Contains(src, `<title>设置双重验证</title>`) {
-				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
-			}
-			if strings.Contains(src, `<title>保险库</title>`) {
-				shell = `<body><header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form></header><main class="page">`
-			}
-			if strings.Contains(src, `<title>项目详情</title>`) {
-				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/projects">‹ 项目</a></header><main class="page">`
-			}
-			if strings.Contains(src, `name="secret"`) && strings.Contains(src, `<title>接入项目</title>`) {
-				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/quick/project">‹ 上一步</a></header><main class="page">`
-			}
+			shell, footer := panelShell(src)
 			src = src[:loc[0]] + shell + src[loc[0]:]
-			if end := strings.LastIndex(strings.ToLower(src), `</html>`); end >= 0 {
-				src = src[:end] + `</main></body>` + src[end:]
+			if close := strings.LastIndex(strings.ToLower(src), `</html>`); close >= 0 {
+				src = src[:close] + footer + src[close:]
 			} else {
-				src += `</main></body></html>`
+				src += footer + `</html>`
 			}
 		}
 	}

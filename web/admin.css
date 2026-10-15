@@ -218,3 +218,36 @@ summary { cursor: pointer; min-height: 32px; }
 .choice span i.brand-github { background: #24292F; }
 .choice span i.brand-gitea { background: #609926; }
 .choice span i.brand-generic { background: #687386; }
+
+/* —— 底部标签栏（导航骨架 v2，SV-20261016-07 A1） —— */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  display: flex; justify-content: space-around; gap: 4px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--line);
+}
+.tabbar .tabitem {
+  flex: 1; min-height: 44px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 3px;
+  color: var(--text-2); text-decoration: none; font-size: 11px; line-height: 1;
+}
+.tabbar .tabicon { font-size: 20px; line-height: 1; }
+.tabbar .tabitem[aria-current="page"] { color: var(--accent); font-weight: 600; }
+/* 有标签栏的页面：正文给标签栏让位，吸底主按钮再上移一档 */
+body.has-tabbar { padding-bottom: calc(140px + env(safe-area-inset-bottom)); }
+body.has-tabbar .bar { bottom: calc(56px + env(safe-area-inset-bottom)); }
+
+/* 表单页顶栏的居中标题 */
+.appbar .page-title { font-size: 17px; font-weight: 600; }
+
+/* 设置页的「退出登录」也排成一行（form + button） */
+.row-form { margin: 0; position: relative; }
+.row-form::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
+button.row {
+  width: 100%; min-height: 52px; padding: 10px 16px; border-radius: 0;
+  justify-content: flex-start; gap: 12px; background: transparent; color: var(--danger);
+  font: 400 16px/1.5 var(--font);
+}
+button.row .t { flex: 1; text-align: left; font-weight: 500; }
