@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 				names = append(names, n)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>平台 <select name="provider"><option value="cloudflare-token">Cloudflare API Token</option><option value="github-pat">GitHub</option><option value="gitea-token">Gitea</option><option value="generic">通用</option></select></label><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><button>保存</button></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>平台 <select name="provider"><option value="cloudflare-token">Cloudflare API Token</option><option value="github-pat">GitHub</option><option value="gitea-token">Gitea</option><option value="generic">通用</option></select></label><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label>Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"></label><label><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><button>保存</button></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -105,7 +106,26 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 			hosts = append(hosts, "github.com")
 		}
 	case "gitea-token":
-		hosts = []string{"gitea.com"}
+		address := strings.TrimSpace(r.Form.Get("gitea_address"))
+		if address == "" {
+			errOut(w, 400, "Gitea 地址必填，请填写完整地址，例如 https://git.example.com")
+			return
+		}
+		parsed, parseErr := url.Parse(address)
+		if parseErr != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			errOut(w, 400, "Gitea 地址无效，请填写完整地址，例如 https://git.example.com")
+			return
+		}
+		if parsed.Scheme != "https" && r.Form.Get("allow_http") != "on" {
+			errOut(w, 400, "Gitea 地址默认必须使用 https://；如确需 HTTP，请勾选「允许 HTTP」")
+			return
+		}
+		if !validHostBinding(parsed.Host) {
+			errOut(w, 400, "Gitea 地址中的主机名无效，请填写例如 https://git.example.com")
+			return
+		}
+		host := strings.ToLower(parsed.Hostname())
+		hosts = []string{host}
 	case "generic":
 		for _, h := range strings.Split(r.Form.Get("hosts"), ",") {
 			if h = strings.TrimSpace(h); h != "" {
@@ -146,9 +166,16 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	association := "未关联"
 	scopeNote := "该密钥位于未关联区，项目客户端不能读取；请通过「接入项目」选择目标客户端。"
+	if providerName == "gitea-token" {
+		scopeNote = "允许发往域名：" + strings.Join(hosts, ", ") + "。"
+	}
 	if project != "" {
 		association = project
-		scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
+		if providerName == "gitea-token" {
+			scopeNote += " 该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
+		} else {
+			scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
+		}
 	}
 	providerLabel := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}[providerName]
 	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><h1>已保存</h1><dl><dt>名称</dt><dd>{{.Label}}</dd><dt>平台</dt><dd>{{.Provider}}</dd><dt>关联状态</dt><dd>{{.Association}}</dd></dl><p>使用范围：{{.ScopeNote}}</p><p>密钥值不会再次显示。</p><a href="/admin/">返回首页</a> · <a href="/admin/quick/project">接入项目</a>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association, "ScopeNote": scopeNote})
@@ -311,8 +338,9 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		s.audit("admin", project, "secret-associate", sid, "", "ok", s.sourceIP(r))
 	}
 	base := strings.TrimRight(s.C.PublicBaseURL, "/")
-	if base == "" {
-		base = "http://192.168.20.132:9531"
+	baseURLMissing := base == ""
+	if baseURLMissing {
+		base = "<SWSV_URL>"
 	}
 	env := fmt.Sprintf("SWSV_URL=%s\nSWSV_TOKEN=%s\nSWSV_NS=%s", base, token, project)
 	runExample := fmt.Sprintf("SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault run --secret vault:%s/<secret-id> -- <command>", base, token, project, project)
@@ -322,5 +350,5 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		resultTitle = "追加接入"
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1><p>客户端令牌只显示这一次，请立即复制并妥善保存。</p><p>使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><label>环境变量配置<textarea readonly rows="3">{{.Env}}</textarea></label><label>命令调用示例<textarea readonly rows="2">{{.Run}}</textarea></label><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><label>Git 凭据助手配置<textarea readonly rows="2">{{.Git}}</textarea></label><p>本次关联密钥数：{{.Count}}</p><a href="/admin/">返回首页</a>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected)})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<p>PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</p>{{end}}<p>客户端令牌只显示这一次，请立即复制并妥善保存。</p><p>使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><label>环境变量配置<textarea readonly rows="3">{{.Env}}</textarea></label><label>命令调用示例<textarea readonly rows="2">{{.Run}}</textarea></label><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><label>Git 凭据助手配置<textarea readonly rows="2">{{.Git}}</textarea></label><p>本次关联密钥数：{{.Count}}</p><a href="/admin/">返回首页</a>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected), "BaseURLMissing": baseURLMissing})
 }

@@ -124,6 +124,11 @@ func TestTOTPEnrollmentCompletesAndNeverRevealsSecretAgain(t *testing.T) {
 		t.Fatalf("GET status=%d", w.Code)
 	}
 	secret := pendingFor(t, s)
+	manualKeyMatch := regexp.MustCompile(`<code>([^<]+)</code>`).FindStringSubmatch(w.Body.String())
+	if len(manualKeyMatch) != 2 || manualKeyMatch[1] == "" {
+		t.Fatal("pending enrollment page omitted the manual base32 key")
+	}
+	manualKey := manualKeyMatch[1]
 	code := auth.GenerateTOTP(secret, time.Now())
 	otherSession := "other-enroll-only-session"
 	sessions.Lock()
@@ -159,6 +164,11 @@ func TestTOTPEnrollmentCompletesAndNeverRevealsSecretAgain(t *testing.T) {
 	w = enrollRequest(s, fresh, http.MethodGet, "/admin/totp/enroll", nil)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "Secret") || strings.Contains(w.Body.String(), "data:image") || strings.Contains(w.Body.String(), "otpauth://") {
 		t.Fatalf("enrolled page leaked enrollment material: %d", w.Code)
+	}
+	for _, forbidden := range []string{"<code", "<svg", manualKey} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("enrolled page contains %q after TOTP confirmation", forbidden)
+		}
 	}
 }
 func TestMustChangePasswordPrecedesEnrollment(t *testing.T) {

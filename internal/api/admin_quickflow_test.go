@@ -134,6 +134,15 @@ func TestQuickProjectCreatesClientAndMovesOnlySelectedSecrets(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "追加接入") {
 		t.Fatalf("existing project should append: %d %s", w.Code, w.Body.String())
 	}
+	secondTokens := tokenPattern.FindAllString(w.Body.String(), -1)
+	if len(secondTokens) == 0 {
+		t.Fatal("second client token missing from append result")
+	}
+	selectedRef, _ := json.Marshal(map[string]string{"secret": "vault:quick-project/" + selected.ID})
+	secondCode, secondOut := requestWithToken(t, s, secondTokens[0], http.MethodPost, "/v1/resolve", string(selectedRef))
+	if (secondCode != http.StatusForbidden && secondCode != http.StatusNotFound) || strings.Contains(secondOut, sentinel) {
+		t.Fatalf("other project client accessed a secret moved from unassigned: %d %s", secondCode, secondOut)
+	}
 	var clientCount int
 	if err := st.DB.QueryRow(`SELECT count(*) FROM clients WHERE ns='quick-project'`).Scan(&clientCount); err != nil {
 		t.Fatal(err)
@@ -276,5 +285,134 @@ func TestQuickCreateResultNeverEchoesSecret(t *testing.T) {
 	}
 	if strings.Contains(auditText, sentinel) {
 		t.Fatal("quick create audit leaked secret value")
+	}
+}
+
+func TestQuickCreateGiteaCustomAddressRequiresHTTPSAndRestrictsHost(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "gitea-address-session", "gitea-address-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	base := url.Values{"csrf": {csrf}, "provider": {"gitea-token"}, "label": {"self-hosted-gitea"}, "value": {"GITEA-TEST-TOKEN"}}
+	missing := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", base)
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "Gitea 地址必填") {
+		t.Fatalf("missing Gitea address status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	httpAddress := cloneValues(base)
+	httpAddress.Set("gitea_address", "http://git.example.com")
+	plain := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", httpAddress)
+	if plain.Code != http.StatusBadRequest || !strings.Contains(plain.Body.String(), "必须使用 https://") {
+		t.Fatalf("HTTP Gitea address without opt-in status=%d body=%s", plain.Code, plain.Body.String())
+	}
+	valid := cloneValues(base)
+	valid.Set("gitea_address", "https://git.example.com/forge/")
+	created := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", valid)
+	if created.Code != http.StatusOK || !strings.Contains(created.Body.String(), "允许发往域名：git.example.com") {
+		t.Fatalf("custom Gitea address status=%d body=%s", created.Code, created.Body.String())
+	}
+	var raw string
+	if err := st.DB.QueryRow(`SELECT bindings FROM secrets WHERE label='self-hosted-gitea'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var binding Binding
+	if err := json.Unmarshal([]byte(raw), &binding); err != nil {
+		t.Fatal(err)
+	}
+	if len(binding.Hosts) != 1 || binding.Hosts[0] != "git.example.com" || binding.AllowHTTP {
+		t.Fatalf("unexpected Gitea binding: hosts=%v allowHTTP=%v", binding.Hosts, binding.AllowHTTP)
+	}
+}
+
+func cloneValues(v url.Values) url.Values {
+	out := url.Values{}
+	for key, values := range v {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func TestQuickProjectEmptyPublicBaseURLUsesPlaceholderAndWarning(t *testing.T) {
+	s, _, _, _ := testServer(t, "secrets:list")
+	s.C.PublicBaseURL = ""
+	cookie, csrf := "empty-public-base-session", "empty-public-base-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	w := adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"empty-base-project"}, "client": {"empty-base-client"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("quick project status=%d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址") || !strings.Contains(body, "SWSV_URL") || !strings.Contains(body, "&lt;SWSV_URL&gt;") || strings.Contains(body, "192.168.20.132") || regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`).MatchString(body) {
+		t.Fatalf("missing base URL warning/placeholder or contains an IP: %s", body)
+	}
+}
+
+func TestReservedNamespaceNamesRejectedByAdvancedAdminPages(t *testing.T) {
+	s, _, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "reserved-name-session", "reserved-name-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	for _, reserved := range []string{"_unassigned", "_internal"} {
+		cases := []struct {
+			path string
+			form url.Values
+		}{
+			{"/admin/namespaces", url.Values{"csrf": {csrf}, "name": {reserved}}},
+			{"/admin/clients", url.Values{"csrf": {csrf}, "ns": {reserved}, "name": {"client-test"}, "scopes": {"resolve"}}},
+			{"/admin/intents/new", url.Values{"csrf": {csrf}, "ns": {reserved}, "label": {"intent-test"}}},
+		}
+		for _, tc := range cases {
+			w := adminPageRequest(s, cookie, http.MethodPost, tc.path, tc.form)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "这是系统保留名称") {
+				t.Errorf("%s reserved name %q: status=%d body=%s", tc.path, reserved, w.Code, w.Body.String())
+			}
+		}
+	}
+}
+
+func TestUnassignedClientListResolveAndFetchMatchMissingSecretResponses(t *testing.T) {
+	s, st, normalToken, _ := testServer(t, "secrets:list,resolve,fetch")
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('unassigned-test-ns','_unassigned',?) ON CONFLICT(name) DO NOTHING`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	badToken := "swsv_fake-unassigned-client-token"
+	hash := sha256.Sum256([]byte(badToken))
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('unassigned-test-client','_unassigned','bad-client',?,?,?)`, hash[:], "secrets:list,resolve,fetch", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := s.save(SecretRequest{NS: unassignedNS, Label: "reserved-client-probe", Provider: "generic", Type: "token", Value: "RESERVED-CLIENT-SECRET-SENTINEL", Bindings: Binding{Hosts: []string{"allowed.example.invalid"}, AllowResolve: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := []struct {
+		name, method, badPath, badBody, missingPath, missingBody string
+	}{
+		{"list", http.MethodGet, "/v1/secrets", "", "/v1/secrets?ns=_missing", ""},
+		{"resolve", http.MethodPost, "/v1/resolve", "", "/v1/resolve", `{"secret":"vault:ns1/nonexistent-id"}`},
+		{"fetch", http.MethodPost, "/v1/fetch", "", "/v1/fetch", `{"secret":"vault:ns1/nonexistent-id","method":"GET","url":"https://example.invalid/"}`},
+	}
+	for _, tc := range checks {
+		badBody := tc.badBody
+		if tc.name == "resolve" {
+			encoded, _ := json.Marshal(map[string]string{"secret": "vault:_unassigned/" + secret.ID})
+			badBody = string(encoded)
+		} else if tc.name == "fetch" {
+			encoded, _ := json.Marshal(map[string]string{"secret": "vault:_unassigned/" + secret.ID, "method": "GET", "url": "https://denied.example.invalid/"})
+			badBody = string(encoded)
+		}
+		badCode, badOut := request(t, s, badToken, tc.method, tc.badPath, badBody)
+		missingCode, missingOut := request(t, s, normalToken, tc.method, tc.missingPath, tc.missingBody)
+		if badCode != http.StatusNotFound {
+			t.Errorf("%s reserved client status=%d body=%q", tc.name, badCode, badOut)
+		}
+		if missingCode != http.StatusNotFound {
+			t.Errorf("%s nonexistent secret status=%d body=%q", tc.name, missingCode, missingOut)
+		}
+		if !bytes.Equal([]byte(badOut), []byte(missingOut)) {
+			t.Errorf("%s reserved client response differs from nonexistent response: reserved=%q missing=%q", tc.name, badOut, missingOut)
+		}
 	}
 }

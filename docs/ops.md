@@ -74,7 +74,7 @@ Stop and disable the service only after confirming it is no longer needed. Remov
 
 1. 在可信终端执行 `sudo -u sws-vault env SWSV_DATA_DIR=/var/lib/sws-vault SWSV_DB_PATH=/var/lib/sws-vault/vault.db SWSV_MASTER_KEY_PATH=/etc/sws-vault/master.key /usr/local/bin/swsvault admin init --generate`，保存一次性显示的初始密码。`admin init`（不带参数）是交互式设置密码；`admin init --generate` 则随机生成初始密码并只显示一次。两种方式都只初始化密码，不会在终端生成或输出 TOTP 秘钥。
 2. 在内网浏览器打开 `http://192.168.20.132:9531/admin` 登录；按提示修改初始密码，并扫描网页二维码完成 TOTP。
-3. 点击「新建」，选择平台、粘贴密钥值，可选关联已有项目后保存；结果页不会回显密钥值。
+3. 点击「新建」，选择平台、粘贴密钥值，可选关联已有项目后保存；结果页不会回显密钥值。 选择 Gitea 时，还需填写完整的「Gitea 地址」（例如 `https://git.example.com`）；默认仅允许 HTTPS，只有明确需要时才勾选「允许 HTTP」。系统只会把该地址的主机名加入允许发往的域名。
 4. 点击「接入项目」，填写项目名、选择要提供给项目的密钥并生成；立即复制一次性显示的 client token 和配置示例。
 5. 在项目环境中配置 `SWSV_URL`、`SWSV_TOKEN`、`SWSV_NS`，使用 `swsvault run` 或 `git-credential` 调用。
 

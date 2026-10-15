@@ -26,6 +26,10 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
 		name := strings.TrimSpace(r.Form.Get("name"))
+		if strings.HasPrefix(name, "_") {
+			errOut(w, 400, "这是系统保留名称")
+			return
+		}
 		if !namePattern.MatchString(name) {
 			errOut(w, 400, "invalid project")
 			return
@@ -72,6 +76,10 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 		scopes := strings.TrimSpace(r.Form.Get("scopes"))
 		cidrs := strings.TrimSpace(r.Form.Get("cidrs"))
 		expires := strings.TrimSpace(r.Form.Get("expires"))
+		if strings.HasPrefix(ns, "_") {
+			errOut(w, 400, "这是系统保留名称")
+			return
+		}
 		if !namePattern.MatchString(ns) || !namePattern.MatchString(name) || scopes == "" {
 			errOut(w, 400, "invalid client fields")
 			return
@@ -428,6 +436,10 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 	ns := strings.TrimSpace(r.Form.Get("ns"))
 	if ns == "" {
 		ns = "default"
+	}
+	if strings.HasPrefix(ns, "_") {
+		errOut(w, 400, "这是系统保留名称")
+		return
 	}
 	if !namePattern.MatchString(ns) {
 		errOut(w, 400, "invalid project")
