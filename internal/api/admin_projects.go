@@ -3,8 +3,10 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -199,6 +201,8 @@ func (s *Server) adminProjectDetail(w http.ResponseWriter, r *http.Request, name
 			}
 			if v.LastUsed == "" {
 				v.LastUsed = "从未使用"
+			} else {
+				v.LastUsed = relativeUseTime(v.LastUsed)
 			}
 			secrets = append(secrets, v)
 		}
@@ -223,13 +227,14 @@ func (s *Server) adminProjectDetail(w http.ResponseWriter, r *http.Request, name
 			} else {
 				v.Status = "正常"
 			}
+			v.Created = relativeUseTime(v.Created)
 			clients = append(clients, v)
 		}
 	}
 	crows.Close()
 	var unassignedCount int
 	_ = s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE ns=? AND status='active'`, unassignedNS).Scan(&unassignedCount)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目详情</title><h1>{{.Name}}</h1><p class="lead">{{if .Description}}{{.Description}}{{else}}还没有简介。{{end}}</p><h2>简介</h2><form method="post" action="/admin/projects/{{.Name}}/description"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>简介 <textarea name="description" rows="3" maxlength="200">{{.Description}}</textarea><small class="hint">最多 200 字。这里只写说明，不要写密钥值。</small></label><button class="btn secondary">保存简介</button></form><h2>密钥</h2>{{if .Secrets}}<div class="group">{{range .Secrets}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">{{.Label}}<small>{{.Provider}} · {{.Status}} · {{.LastUsed}}</small></span><a href="/admin/secrets/{{.ID}}/bindings">使用范围</a></div>{{end}}</div>{{else}}<p class="hint">这个项目还没有密钥。</p>{{end}}<div class="group"><a class="row" href="/admin/secrets/new?project={{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="t">新建密钥<small>新建后直接属于本项目</small></span></a><a class="row" href="{{.ImportURL}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="t">从未关联移入<small>未关联区现有 {{.Unassigned}} 个密钥</small></span></a></div><h2>接入方</h2>{{if .Clients}}<div class="group">{{range .Clients}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">{{.Name}}<small>{{if .Note}}{{.Note}} · {{end}}{{.Permission}} · 来源 IP {{.SourceIP}} · {{.Status}} · {{.Created}}</small></span><form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></div>{{end}}</div>{{else}}<p class="hint">还没有接入方。选择下面的「添加接入方」给使用方发一张通行证。</p>{{end}}<div class="bar"><a class="btn block" href="/admin/projects/{{.Name}}/clients/new">添加接入方</a></div>`, map[string]any{"CSRF": sess.csrf, "Name": name, "Description": description, "Secrets": secrets, "Clients": clients, "Unassigned": unassignedCount, "ImportURL": projectSecretsURL(name)})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目详情</title><h1>{{.Name}}</h1><p class="lead">{{if .Description}}{{.Description}}{{else}}还没有简介。{{end}}</p><form method="post" action="/admin/projects/{{.Name}}/description"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>简介 <textarea name="description" rows="3" maxlength="200">{{.Description}}</textarea><small class="hint">最多 200 字。这里只写说明，不要写密钥值。</small></label><button class="btn secondary">保存简介</button></form><h2>密钥</h2>{{if .Secrets}}<div class="group">{{range .Secrets}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">{{.Label}}<small>{{.Provider}} · {{.Status}} · {{.LastUsed}}</small></span><a href="/admin/secrets/{{.ID}}/bindings">使用范围</a></div>{{end}}</div>{{else}}<p class="hint">这个项目还没有密钥。</p>{{end}}<div class="group"><a class="row" href="/admin/secrets/new?project={{.Name}}&from=project"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="t">新建密钥<small>新建后直接属于本项目</small></span></a><a class="row" href="{{.ImportURL}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="t">从未关联移入<small>未关联区现有 {{.Unassigned}} 个密钥</small></span></a></div><h2>接入方</h2>{{if .Clients}}<div class="group">{{range .Clients}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">{{.Name}}<small>{{if .Note}}{{.Note}} · {{end}}{{.Permission}} · 来源 IP {{.SourceIP}} · {{.Status}} · {{.Created}}</small></span><form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></div>{{end}}</div>{{else}}<p class="hint">还没有接入方。选择下面的「添加接入方」给使用方发一张通行证。</p>{{end}}<div class="bar"><a class="btn block" href="/admin/projects/{{.Name}}/clients/new">添加接入方</a></div>`, map[string]any{"CSRF": sess.csrf, "Name": name, "Description": description, "Secrets": secrets, "Clients": clients, "Unassigned": unassignedCount, "ImportURL": projectSecretsURL(name)})
 }
 
 // adminProjectDescription 保存项目简介。
@@ -472,34 +477,15 @@ func (s *Server) adminProjectClientNew(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 	for _, sid := range selected {
-		var oldNS, b string
-		if e = tx.QueryRow(`SELECT ns,bindings FROM secrets WHERE id=? AND status='active'`, sid).Scan(&oldNS, &b); e != nil || oldNS != name {
+		var secretNS string
+		if e = tx.QueryRow(`SELECT ns FROM secrets WHERE id=? AND status='active'`, sid).Scan(&secretNS); e != nil || secretNS != name {
 			adminErrOut(w, http.StatusBadRequest, "selected secret unavailable")
 			return
 		}
-		var bd Binding
-		if json.Unmarshal([]byte(b), &bd) != nil {
-			adminErrOut(w, http.StatusInternalServerError, "invalid stored policy")
-			return
-		}
-		if allowResolve {
-			bd.AllowResolve = true
-		}
-		bd.NoClientAccess = false
-		found := false
-		for _, v := range bd.AllowedClients {
-			if v == clientID {
-				found = true
-			}
-		}
-		if !found {
-			bd.AllowedClients = append(bd.AllowedClients, clientID)
-		}
-		bb, _ := json.Marshal(bd)
-		if _, e = tx.Exec(`UPDATE secrets SET bindings=? WHERE id=?`, string(bb), sid); e != nil {
-			adminErrOut(w, http.StatusInternalServerError, "could not authorize selected secret")
-			return
-		}
+	}
+	if e = authorizeProjectSecrets(tx, name, clientID, selected, allowResolve); e != nil {
+		adminErrOut(w, http.StatusInternalServerError, "could not authorize selected secrets")
+		return
 	}
 	if e = tx.Commit(); e != nil {
 		adminErrOut(w, http.StatusInternalServerError, "could not commit client")
@@ -516,7 +502,83 @@ func (s *Server) adminProjectClientNew(w http.ResponseWriter, r *http.Request, n
 		AllowResolve: allowResolve,
 		CIDRs:        strings.Join(cidrs, ", "),
 		Count:        len(selected),
+		ScopeNote:    "本次勾选的密钥已授权给这个接入方；未勾选的密钥它用不了，其他接入方的权限不受影响。",
 		BackHref:     "/admin/projects/" + name,
 		BackLabel:    "返回项目",
 	})
+}
+
+// authorizeProjectSecrets 在同一个事务里处理「空授权列表」的语义：
+// 先把「对全项目开放」（allowed_clients 为空且 no_client_access=false）的密钥显式化——
+// 有既有接入方就写成它们，没有就改成 no_client_access=true（否则空列表仍然等于对全项目开放）；
+// 再给本次勾选的密钥追加新接入方，谁都不会被静默撤权。一步式「接入项目」与项目页共用本函数。
+func authorizeProjectSecrets(tx *sql.Tx, project, newClientID string, selected []string, allowResolve bool) error {
+	existing := []string{}
+	rows, err := tx.Query(`SELECT id FROM clients WHERE ns=? AND disabled=0`, project)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil && id != newClientID {
+			existing = append(existing, id)
+		}
+	}
+	rows.Close()
+	chosen := map[string]bool{}
+	for _, sid := range selected {
+		chosen[sid] = true
+	}
+	srows, err := tx.Query(`SELECT id,bindings FROM secrets WHERE ns=? AND status='active'`, project)
+	if err != nil {
+		return err
+	}
+	type secretRow struct{ id, bindings string }
+	var list []secretRow
+	for srows.Next() {
+		var r secretRow
+		if srows.Scan(&r.id, &r.bindings) == nil {
+			list = append(list, r)
+		}
+	}
+	srows.Close()
+	for _, r := range list {
+		var bd Binding
+		if json.Unmarshal([]byte(r.bindings), &bd) != nil {
+			return errors.New("invalid stored policy")
+		}
+		changed := false
+		if len(bd.AllowedClients) == 0 && !bd.NoClientAccess {
+			if len(existing) == 0 {
+				bd.NoClientAccess = true
+			} else {
+				bd.AllowedClients = append([]string(nil), existing...)
+			}
+			changed = true
+		}
+		if chosen[r.id] {
+			if allowResolve {
+				bd.AllowResolve = true
+			}
+			bd.NoClientAccess = false
+			found := false
+			for _, v := range bd.AllowedClients {
+				if v == newClientID {
+					found = true
+				}
+			}
+			if !found {
+				bd.AllowedClients = append(bd.AllowedClients, newClientID)
+			}
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		bb, _ := json.Marshal(bd)
+		if _, err := tx.Exec(`UPDATE secrets SET bindings=? WHERE id=?`, string(bb), r.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -47,7 +47,7 @@ The admin panel is server-rendered HTML under `/admin/`; every write needs the `
 | `GET /admin/namespaces` | 303 redirect to `/admin/projects` |
 | `POST /admin/namespaces` | Legacy project creation, kept for compatibility |
 
-`namespaces.description` and `clients.note` are added by an idempotent additive migration (`PRAGMA table_info` + `ALTER TABLE`); existing rows keep their data and the columns default to the empty string. A client whose secret binding carries `no_client_access=true` is rejected even when `allowed_clients` is empty, which is how imported secrets stay unauthorized until an access pass selects them.
+`namespaces.description` and `clients.note` are added by an idempotent additive migration (`PRAGMA table_info` + `ALTER TABLE`); existing rows keep their data and the columns default to the empty string. A client whose secret binding carries `no_client_access=true` is rejected even when `allowed_clients` is empty, which is how imported secrets stay unauthorized until an access pass selects them. Adding an access pass first explicitizes every wide-open binding of the project (`allowed_clients` empty and `no_client_access=false`): it is rewritten to the project's current non-disabled clients, or to `no_client_access=true` when the project has none yet. Only then is the new client appended to the selected secrets, so an unselected secret is never reachable by the new pass and no existing pass loses access. Secrets created from the project detail entry (`/admin/secrets/new?project=…&from=project`) start with `no_client_access=true`.
 
 ### MCP tools
 

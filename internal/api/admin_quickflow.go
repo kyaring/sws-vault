@@ -110,6 +110,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		preselected := strings.TrimSpace(r.URL.Query().Get("project"))
+		fromProject := r.URL.Query().Get("from") == "project"
 		rows, e := s.S.DB.Query(`SELECT name FROM namespaces WHERE name<>? ORDER BY name`, unassignedNS)
 		if e != nil {
 			adminErrOut(w, 500, "internal error")
@@ -123,7 +124,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 				names = append(names, n)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}"{{if eq . $.SelectedProject}} selected{{end}}>{{.}}</option>{{end}}</select><small class="hint">不关联时，任何客户端都无法调用。</small></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names, "SelectedProject": preselected})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}">{{if .FromProject}}<input type="hidden" name="from" value="project">{{end}}<fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}"{{if eq . $.SelectedProject}} selected{{end}}>{{.}}</option>{{end}}</select><small class="hint">不关联时，任何客户端都无法调用。</small></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names, "SelectedProject": preselected, "FromProject": fromProject})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -188,7 +189,8 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 400, "allowed domain required for generic platform")
 		return
 	}
-	q := SecretRequest{NS: ns, Label: strings.TrimSpace(r.Form.Get("label")), Provider: providerName, Type: "token", Value: r.Form.Get("value"), Bindings: Binding{Hosts: hosts, AllowResolve: true, AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"}}
+	fromProject := r.Form.Get("from") == "project"
+	q := SecretRequest{NS: ns, Label: strings.TrimSpace(r.Form.Get("label")), Provider: providerName, Type: "token", Value: r.Form.Get("value"), Bindings: Binding{Hosts: hosts, AllowResolve: true, NoClientAccess: fromProject, AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"}}
 	if providerName == "generic" {
 		q.Bindings.Headers = map[string]string{"Authorization": "Bearer {v}"}
 		if raw := strings.TrimSpace(r.Form.Get("headers")); raw != "" {
@@ -221,6 +223,8 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 		association = project
 		if providerName == "gitea-token" {
 			scopeNote += " 该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
+		} else if fromProject {
+			scopeNote = "该密钥尚未授权给任何接入方；请到项目详情页「添加接入方」勾选它，或在使用范围里填入接入方 ID。"
 		} else {
 			scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
 		}
@@ -342,6 +346,11 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selected := r.Form["secret"]
+	// 项目内已有的空授权列表密钥先显式化，未勾选的密钥才不会对新客户端开放。
+	if e = authorizeProjectSecrets(tx, project, clientID, selected, allowResolve); e != nil {
+		adminErrOut(w, 500, "could not authorize selected secrets")
+		return
+	}
 	for _, sid := range selected {
 		var oldNS, typ string
 		var version int
@@ -469,7 +478,7 @@ printf 'Authorization: Bearer %%s\n' "$SWSV_TOKEN" | curl -sS -X POST "$SWSV_URL
   }
 }`, base)
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section>{{if .AllowResolve}}<section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">此令牌可以取出明文，不要交给 AI。</p>{{else}}<section class="secret"><header>代发调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Fetch}}</pre></section><p class="hint">令牌只放在环境变量或 -H @- 里，不会出现在命令行参数中，也不会进 shell 历史。</p><section class="secret"><header>MCP 配置示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.MCP}}</pre></section><p class="hint">MCP 客户端是否展开 ${SWSV_TOKEN} 由它自己决定；不展开的客户端要把令牌填进它自己的密钥配置，不要写进会提交到仓库的文件。</p><p class="hint">此令牌只能代发请求，不能取出明文。</p>{{end}}{{if .CIDRs}}<p class="hint">限制来源 IP：{{.CIDRs}}</p>{{end}}<p class="hint">本次关联密钥数：{{.Count}}</p><p class="hint">使用范围：{{.ScopeNote}}</p><div class="bar"><a class="btn secondary" href="{{.BackHref}}">{{.BackLabel}}</a></div>`, map[string]any{"Project": v.Project, "Title": v.Title, "Env": env, "Run": runExample, "Git": gitExample, "Fetch": fetchExample, "MCP": mcpExample, "Count": v.Count, "BaseURLMissing": baseURLMissing, "AllowResolve": v.AllowResolve, "CIDRs": v.CIDRs, "ScopeNote": v.ScopeNote, "BackHref": v.BackHref, "BackLabel": v.BackLabel})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section>{{if .AllowResolve}}<section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">此令牌可以取出明文，不要交给 AI。</p>{{else}}<section class="secret"><header>代发调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Fetch}}</pre></section><p class="hint">令牌只放在环境变量或 -H @- 里，不会出现在命令行参数中，也不会进 shell 历史。</p><section class="secret"><header>MCP 配置示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.MCP}}</pre></section><p class="hint">MCP 客户端是否展开 ${SWSV_TOKEN} 由它自己决定；不展开的客户端要把令牌填进它自己的密钥配置，不要写进会提交到仓库的文件。</p><p class="hint">此令牌只能代发请求，不能取出明文。</p>{{end}}<p class="hint">来源 IP：{{if .CIDRs}}{{.CIDRs}}{{else}}不限{{end}}</p><p class="hint">本次关联密钥数：{{.Count}}</p>{{if .ScopeNote}}<p class="hint">使用范围：{{.ScopeNote}}</p>{{end}}<div class="bar"><a class="btn secondary" href="{{.BackHref}}">{{.BackLabel}}</a></div>`, map[string]any{"Project": v.Project, "Title": v.Title, "Env": env, "Run": runExample, "Git": gitExample, "Fetch": fetchExample, "MCP": mcpExample, "Count": v.Count, "BaseURLMissing": baseURLMissing, "AllowResolve": v.AllowResolve, "CIDRs": v.CIDRs, "ScopeNote": v.ScopeNote, "BackHref": v.BackHref, "BackLabel": v.BackLabel})
 }
 
 // normalizeCIDRs 规范化逗号分隔的 IP / CIDR：单个 IPv4 补 /32，单个 IPv6 补 /128，CIDR 归一为网络地址。
