@@ -11,4 +11,5 @@
 | SV-20261015-04 | S-6 测试部署包（Hub 本机，内网 192.168.20.132:9531）+ v1 遗留两项 | GPT | verified @6b91d1b（Hark 12:35）→ merged | 12:30 RikkaHub-1 全量审核 reviewed-pass（待裁定 1 项：交付说明缺验收结果）；报告 docs/reviews/SV-20261015-04-review.md；被审提交 6b91d1b | 2026-10-15 12:30 |
 | SV-20261015-05 | S-6 实装：Hub 本机上线测试版（192.168.20.132:9531） | Hark | in-progress（3–5 步已完成 12:35，在跑；等 OPC 在面板做初始化和 TOTP，之后第 7 步备份） | 每一步都要 OPC 批准；防火墙只放行 192.168.20.0/24 | 2026-10-15 12:10 |
 | RV-SV-20261015-04 | 审核 S-6 部署包（6b91d1b），全量 | RikkaHub-1 | done（reviewed-pass daf27e0；Hark verified） | Hark 12:15 派发；12:30 完成，结论 reviewed-pass，报告 docs/reviews/SV-20261015-04-review.md | 2026-10-15 12:30 |
-| SV-20261015-06 | 面板快速流程 + 网页扫码绑定 TOTP（含补充 F/G） | GPT | verified | 17:55 Hark 终签 verified @5814212（RikkaHub-1 两轮：CR→rechecked-pass 7faec9e）；4 条建议并入后续卡；待 OPC 批准合并+部署 | 2026-10-15 17:55 |
+| SV-20261015-06 | 面板快速流程 + 网页扫码绑定 TOTP（含补充 F/G） | GPT | verified | 17:55 Hark 终签 verified @5814212；OPC 17:47 定先修遗留 4 项再合并 → SV-20261015-07（同分支）| 2026-10-15 17:55 |
+| SV-20261015-07 | 修复 SV-06 遗留 4 项：Gitea 自建地址、保留名防护和测试、去掉写死地址、加强断言（同分支 feat/s6-quickflow，基线 5814212） | GPT | ready | OPC 17:47 批准开卡；修完后与 SV-06 一起合并 | 2026-10-15 17:50 |
