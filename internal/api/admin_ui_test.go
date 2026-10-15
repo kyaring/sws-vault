@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kyaring/sws-vault/web"
 )
 
 var (
@@ -59,14 +61,33 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		if w.Code != http.StatusOK && w.Code != http.StatusNotFound {
 			t.Fatalf("%s status=%d body=%s", path, w.Code, w.Body.String())
 		}
+		if path == "/admin/" && (!strings.Contains(w.Body.String(), `<svg`) || !strings.Contains(w.Body.String(), `>新建</b>`) || !strings.Contains(w.Body.String(), `>接入项目</b>`)) {
+			t.Errorf("dashboard action cards missing SVG/copy")
+		}
 		if path == "/admin/login" || strings.HasPrefix(path, "/admin/") || path == "/admin/" || strings.HasPrefix(path, "/i/") {
 			if !strings.Contains(w.Body.String(), `name="viewport" content="width=device-width,initial-scale=1"`) || !strings.Contains(w.Body.String(), `/admin/assets/admin.css`) {
 				t.Errorf("%s missing viewport or admin.css", path)
 			}
 			body := w.Body.String()
+			if (path == "/admin/clients" || path == "/admin/audit") && (!strings.Contains(body, `<thead>`) || !strings.Contains(body, `<tbody>`)) {
+				t.Errorf("%s table missing thead/tbody", path)
+			}
 			if path == "/admin/clients" && !strings.Contains(body, `data-label="ID"`) {
 				t.Errorf("%s table cells missing mobile data-label attributes", path)
 			}
+			if (path == "/admin/password" || path == "/admin/advanced" || path == "/admin/advanced/secrets") && strings.Contains(body, `action="/admin/logout"`) {
+				t.Errorf("%s body contains logout form", path)
+			}
+			if (path == "/admin/clients" || path == "/admin/namespaces" || path == "/admin/intents/new") && strings.Contains(body, `class="bar"><button class="btn block"`) {
+				t.Errorf("%s advanced action incorrectly uses sticky bar", path)
+			}
+			if path == "/admin/quick/project?project=ui-test&client=default" && (!strings.Contains(body, `class="back" href="/admin/quick/project">‹ 上一步`) || strings.Contains(body, `>返回上一步</a>`) || strings.Contains(body, `>取消</a>`)) {
+				t.Errorf("quick project step 2 navigation not in top bar")
+			}
+			if path == "/admin/secrets/new" && (!strings.Contains(body, "粘贴后立即加密保存") || !strings.Contains(body, "不关联时，任何客户端都无法调用") || !strings.Contains(body, "只会发往这个域名") || !strings.Contains(body, `class="brand-cloudflare"`) || !strings.Contains(body, `>Cloudflare</b>`)) {
+				t.Errorf("new secret page missing design copy/platform tiles")
+			}
+
 			if inlineStyleRE.MatchString(body) || strings.Contains(strings.ToLower(body), "<style") || hasInlineScript(body) || inlineEventRE.MatchString(body) {
 				t.Errorf("%s contains inline style/script/event attribute", path)
 			}
@@ -79,12 +100,12 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	setSession(true, true)
 	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/password", nil)
 	passwordHTML := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(passwordHTML, `name="viewport"`) || !strings.Contains(passwordHTML, `/admin/assets/admin.css`) || inlineStyleRE.MatchString(passwordHTML) || hasInlineScript(passwordHTML) || inlineEventRE.MatchString(passwordHTML) {
+	if w.Code != http.StatusOK || !strings.Contains(passwordHTML, `name="viewport"`) || !strings.Contains(passwordHTML, `/admin/assets/admin.css`) || strings.Contains(passwordHTML, `action="/admin/logout"`) || inlineStyleRE.MatchString(passwordHTML) || hasInlineScript(passwordHTML) || inlineEventRE.MatchString(passwordHTML) {
 		t.Fatalf("change-password page violates page shell/CSP constraints: status=%d", w.Code)
 	}
 	setSession(false, true)
 	w = adminPageRequest(s, cookie, http.MethodGet, "/admin/totp/enroll", nil)
-	if !strings.Contains(w.Body.String(), `name="viewport"`) || inlineStyleRE.MatchString(w.Body.String()) || hasInlineScript(w.Body.String()) || inlineEventRE.MatchString(w.Body.String()) {
+	if !strings.Contains(w.Body.String(), `name="viewport"`) || strings.Contains(w.Body.String(), `action="/admin/logout"`) || inlineStyleRE.MatchString(w.Body.String()) || hasInlineScript(w.Body.String()) || inlineEventRE.MatchString(w.Body.String()) {
 		t.Fatalf("TOTP enrollment page violates page shell/CSP constraints: status=%d", w.Code)
 	}
 
@@ -97,13 +118,24 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	}
 	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"ui-project"}, "client": {"ui-client"}})
 	projectHTML := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(projectHTML, `class="secret"`) || !strings.Contains(projectHTML, `class="copy"`) || !strings.Contains(projectHTML, `name="viewport"`) || !strings.Contains(projectHTML, `/admin/assets/admin.css`) || inlineStyleRE.MatchString(projectHTML) || hasInlineScript(projectHTML) || inlineEventRE.MatchString(projectHTML) {
+	if w.Code != http.StatusOK || !strings.Contains(projectHTML, `class="secret"`) || !strings.Contains(projectHTML, `class="btn small secondary copy"`) || !strings.Contains(projectHTML, `class="note warn"`) || !strings.Contains(projectHTML, `class="hint">使用范围：`) || !strings.Contains(projectHTML, `name="viewport"`) || !strings.Contains(projectHTML, `/admin/assets/admin.css`) || inlineStyleRE.MatchString(projectHTML) || hasInlineScript(projectHTML) || inlineEventRE.MatchString(projectHTML) {
 		t.Fatalf("project configuration page status=%d missing copy UI or contains inline code", w.Code)
 	}
 
+	css, err := web.Assets.ReadFile("admin.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(css), "a.primary") {
+		t.Fatal("admin.css still contains conflicting a.primary selector")
+	}
 	// Admin HTML errors use the shell; API errors remain JSON.
+	clientHTML := adminPageRequest(s, cookie, http.MethodGet, "/admin/clients", nil).Body.String()
+	if !strings.Contains(clientHTML, `class="btn small danger"`) || strings.Contains(clientHTML, `class="bar"><button class="btn block">创建客户端`) {
+		t.Fatalf("client page missing compact danger action or has sticky create action")
+	}
 	w = adminPageRequest(s, cookie, http.MethodGet, "/admin/not-a-route", nil)
-	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `class="appbar"`) {
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `class="appbar"`) || !strings.Contains(w.Body.String(), "找不到这个页面") {
 		t.Fatalf("admin 404 status=%d body=%s", w.Code, w.Body.String())
 	}
 	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"INVALID NAME"}, "client": {"ui-client"}})
@@ -155,7 +187,7 @@ func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
 	}
 	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/", nil)
 	body := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(body, "3 个密钥 · 2 个项目") || !strings.Contains(body, "最近一次调用 5 分钟前") || !strings.Contains(body, `class="badge">1</span>`) || !strings.Contains(body, "ui-ns2") {
+	if w.Code != http.StatusOK || !strings.Contains(body, "3 个密钥 · 2 个项目") || !strings.Contains(body, "最近一次调用 5 分钟前") || !strings.Contains(body, `class="badge">1</span>`) || !strings.Contains(body, "ui-ns2") || !strings.Contains(body, "还没给任何项目，暂不可调用") {
 		t.Fatalf("dashboard stats incorrect: status=%d body=%s", w.Code, body)
 	}
 	for table, expected := range before {

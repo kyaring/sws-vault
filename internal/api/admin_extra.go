@@ -62,7 +62,7 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 			list = append(list, v)
 		}
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>项目</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><div class="bar"><button class="btn block">创建</button></div></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>项目</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><button class="btn block">创建</button></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
 }
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -150,7 +150,7 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 			list = append(list, v)
 		}
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><div class="bar"><button class="btn block">创建客户端</button></div></form><table><tr><th>ID</th><th>项目</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><button class="btn block">创建客户端</button></form><table><tr><th>ID</th><th>项目</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
 }
 func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -409,7 +409,7 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>创建一次性录入链接</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目 <input name="ns" value="default" required></label><label>标签 <input name="label" required></label><div class="bar"><button class="btn block">创建链接</button></div></form></html>`, map[string]string{"CSRF": sess.csrf})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>创建一次性录入链接</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目 <input name="ns" value="default" required></label><label>标签 <input name="label" required></label><button class="btn block">创建链接</button></form></html>`, map[string]string{"CSRF": sess.csrf})
 		return
 	}
 	if r.Method != http.MethodPost {

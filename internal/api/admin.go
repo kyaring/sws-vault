@@ -227,7 +227,7 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		NS       string
 		Provider string
 	}{sess.csrf, items, displayNSFilter, providerFilter}
-	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
+	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
 	render(w, page, data)
 }
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -449,7 +449,20 @@ var (
 )
 
 func adminErrOut(w http.ResponseWriter, status int, msg string) {
-	renderStatus(w, status, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>请求未完成</title><h1>请求未完成</h1><div class="note danger"><p>{{.Message}}</p></div><a href="/admin/">返回首页</a></html>`, map[string]string{"Message": msg})
+	message := msg
+	switch status {
+	case http.StatusBadRequest:
+		message = "请求无效，请检查输入后重试。"
+	case http.StatusForbidden:
+		message = "请求校验失败，请刷新页面后重试。"
+	case http.StatusNotFound:
+		message = "找不到这个页面。"
+	case http.StatusMethodNotAllowed:
+		message = "不支持的请求方法。"
+	case http.StatusInternalServerError:
+		message = "服务暂时无法完成请求，请稍后重试。"
+	}
+	renderStatus(w, status, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>请求未完成</title><h1>请求未完成</h1><div class="note danger"><p>{{.Message}}</p>{{if .Detail}}<p class="hint">{{.Detail}}</p>{{end}}</div><a href="/admin/">返回首页</a></html>`, map[string]string{"Message": message, "Detail": msg})
 }
 
 func render(w http.ResponseWriter, src string, data any) { renderStatus(w, http.StatusOK, src, data) }
@@ -467,8 +480,14 @@ func renderStatus(w http.ResponseWriter, status int, src string, data any) {
 	if !strings.Contains(src, `class="appbar"`) {
 		if loc := panelStartRE.FindStringIndex(src); loc != nil {
 			shell := `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
+			if strings.Contains(src, `<title>设置双重验证</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
+			}
 			if strings.Contains(src, `<title>保险库</title>`) {
-				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form></header><main class="page">`
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form></header><main class="page">`
+			}
+			if strings.Contains(src, `name="secret"`) && strings.Contains(src, `<title>接入项目</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/quick/project">‹ 上一步</a></header><main class="page">`
 			}
 			src = src[:loc[0]] + shell + src[loc[0]:]
 			if end := strings.LastIndex(strings.ToLower(src), `</html>`); end >= 0 {
@@ -493,28 +512,36 @@ func renderStatus(w http.ResponseWriter, status int, src string, data any) {
 
 func addPanelTableLabels(document string) string {
 	return panelTableRE.ReplaceAllStringFunc(document, func(table string) string {
-		rows := panelRowRE.FindAllString(table, -1)
+		openEnd := strings.Index(table, ">")
+		closeStart := strings.LastIndex(strings.ToLower(table), "</table>")
+		if openEnd < 0 || closeStart < openEnd {
+			return table
+		}
+		opening, inner := table[:openEnd+1], table[openEnd+1:closeStart]
+		rows := panelRowRE.FindAllString(inner, -1)
+		if len(rows) == 0 {
+			return table
+		}
 		var labels []string
-		for _, row := range rows {
+		headerIndex := -1
+		for i, row := range rows {
 			if strings.Contains(strings.ToLower(row), "<th") {
+				headerIndex = i
 				for _, match := range panelTHRE.FindAllStringSubmatch(row, -1) {
 					labels = append(labels, strings.TrimSpace(stdhtml.UnescapeString(panelTagRE.ReplaceAllString(match[1], ""))))
 				}
 				break
 			}
 		}
-		if len(labels) == 0 {
+		if headerIndex < 0 {
 			return table
 		}
-		rowIndex := 0
-		return panelRowRE.ReplaceAllStringFunc(table, func(row string) string {
-			current := rowIndex
-			rowIndex++
-			if current == 0 || strings.Contains(strings.ToLower(row), "<th") {
-				return row
+		for i := range rows {
+			if i == headerIndex || strings.Contains(strings.ToLower(rows[i]), "<th") {
+				continue
 			}
 			cellIndex := 0
-			return panelTDRE.ReplaceAllStringFunc(row, func(tag string) string {
+			rows[i] = panelTDRE.ReplaceAllStringFunc(rows[i], func(tag string) string {
 				label := ""
 				if cellIndex < len(labels) {
 					label = labels[cellIndex]
@@ -525,6 +552,13 @@ func addPanelTableLabels(document string) string {
 				}
 				return strings.TrimSuffix(tag, ">") + ` data-label="` + template.HTMLEscapeString(label) + `">`
 			})
-		})
+		}
+		var bodyRows []string
+		for i, row := range rows {
+			if i != headerIndex {
+				bodyRows = append(bodyRows, row)
+			}
+		}
+		return opening + `<thead>` + rows[headerIndex] + `</thead><tbody>` + strings.Join(bodyRows, "") + `</tbody></table>`
 	})
 }
