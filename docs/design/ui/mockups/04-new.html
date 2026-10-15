@@ -1,0 +1,7 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>新建密钥</title><link rel="stylesheet" href="admin.css"><body><div class="appbar"><a class="back" href="#">‹ 首页</a></div><h1>新建</h1><p class="lead">粘贴后立即加密保存，之后任何页面都不会再显示原值。</p>
+<form><label>平台</label><div class="choices"><label class="choice"><input type="radio" name="p"><span><i style="background:#F38020">CF</i>Cloudflare</span></label><label class="choice"><input type="radio" name="p"><span><i style="background:#24292F">GH</i>GitHub</span></label><label class="choice"><input type="radio" name="p" checked><span><i style="background:#609926">Gt</i>Gitea</span></label><label class="choice"><input type="radio" name="p"><span><i style="background:#6B6B73">··</i>通用</span></label></div>
+<label>名称<input value="自建 Gitea 部署令牌"></label>
+<label>密钥值<input type="password" value="••••••••••••••••••••••"></label>
+<label>Gitea 地址<input type="url" value="https://git.example.com"><span class="hint">只会发往这个域名</span></label>
+<label>关联项目<select><option>暂不关联（未关联）</option></select><span class="hint">不关联时，任何客户端都无法调用</span></label>
+</form><div class="bar"><div><button style="width:100%">保存</button></div></div></body></html>

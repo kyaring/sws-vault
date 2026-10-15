@@ -1,0 +1,8 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>项目配置</title><link rel="stylesheet" href="admin.css"><body><div class="appbar"><a class="back" href="#">‹ 首页</a></div><h1>blog-deploy 已接入</h1>
+<div class="note danger"><span><b>令牌只显示这一次。</b>离开此页后无法再查看，请立即复制保存。</span></div>
+<div class="secret"><header>环境变量<button class="btn small secondary">复制</button></header><pre>SWSV_URL=http://192.168.20.132:9531
+SWSV_TOKEN=swsv_c_9Xk2…（一次性）
+SWSV_NS=blog-deploy</pre></div>
+<div class="secret"><header>命令调用<button class="btn small secondary">复制</button></header><pre>swsvault run --secret gitea-deploy -- ./deploy.sh</pre></div>
+<div class="secret"><header>Git 凭据助手<button class="btn small secondary">复制</button></header><pre>git config credential.helper "swsvault git-credential"</pre></div>
+<p class="hint">本次关联 2 个密钥；新勾选的未关联密钥只授权给这个客户端。</p></body></html>
