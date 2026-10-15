@@ -71,7 +71,7 @@ func TestQuickProjectCreatesClientAndMovesOnlySelectedSecrets(t *testing.T) {
 	sessions.Lock()
 	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
 	sessions.Unlock()
-	w := adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"quick-project"}, "client": {"quick-client"}, "secret": {selected.ID}})
+	w := adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"quick-project"}, "client": {"quick-client"}, "secret": {selected.ID}, "allow_resolve": {"on"}})
 	if w.Code != 200 {
 		t.Fatalf("quick project status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -130,7 +130,7 @@ func TestQuickProjectCreatesClientAndMovesOnlySelectedSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"quick-project"}, "client": {"quick-client-2"}, "secret": {second.ID}})
+	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"quick-project"}, "client": {"quick-client-2"}, "secret": {second.ID}, "allow_resolve": {"on"}})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "追加接入") {
 		t.Fatalf("existing project should append: %d %s", w.Code, w.Body.String())
 	}
