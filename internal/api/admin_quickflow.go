@@ -26,26 +26,72 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT n.name,(SELECT count(*) FROM secrets x WHERE x.ns=n.name AND x.status='active'),(SELECT count(*) FROM clients c WHERE c.ns=n.name AND c.disabled=0) FROM namespaces n WHERE n.name<>? ORDER BY n.name`, unassignedNS)
-	if e != nil {
-		errOut(w, 500, "internal error")
-		return
-	}
-	defer rows.Close()
 	type project struct {
 		Name             string
 		Secrets, Clients int
 	}
+	rows, err := s.S.DB.Query(`SELECT n.name,(SELECT count(*) FROM secrets x WHERE x.ns=n.name AND x.status='active'),(SELECT count(*) FROM clients c WHERE c.ns=n.name AND c.disabled=0) FROM namespaces n WHERE n.name<>? ORDER BY n.name`, unassignedNS)
+	if err != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer rows.Close()
 	var projects []project
 	for rows.Next() {
-		var p project
-		if rows.Scan(&p.Name, &p.Secrets, &p.Clients) == nil {
-			projects = append(projects, p)
+		var item project
+		if rows.Scan(&item.Name, &item.Secrets, &item.Clients) == nil {
+			projects = append(projects, item)
 		}
 	}
-	var unassigned int
-	_ = s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE ns=? AND status='active'`, unassignedNS).Scan(&unassigned)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>SWS Vault</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>SWS Vault</h1><nav><a class="primary" href="/admin/secrets/new">新建</a> <a class="primary" href="/admin/quick/project">接入项目</a></nav><h2>项目</h2>{{if .Projects}}<table><tr><th>项目</th><th>密钥数</th><th>客户端数</th></tr>{{range .Projects}}<tr><td>{{.Name}}</td><td>{{.Secrets}}</td><td>{{.Clients}}</td></tr>{{end}}</table>{{else}}<p>还没有项目。选择「接入项目」开始。</p>{{end}}<p><a href="/admin/advanced/secrets">高级 · 密钥</a> · <a href="/admin/advanced">更多高级功能</a></p><p><a href="/admin/advanced/secrets?ns=_unassigned">未关联密钥（{{.Unassigned}}）</a></p><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form>`, map[string]any{"CSRF": sess.csrf, "Projects": projects, "Unassigned": unassigned})
+	var secretCount, projectCount, unassigned int
+	var lastUsed string
+	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets`).Scan(&secretCount); err != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name<>?`, unassignedNS).Scan(&projectCount); err != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE ns=? AND status='active'`, unassignedNS).Scan(&unassigned); err != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.S.DB.QueryRow(`SELECT COALESCE(max(last_used_at), '') FROM secrets WHERE last_used_at<>''`).Scan(&lastUsed); err != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if lastUsed != "" {
+		lastUsed = relativeUseTime(lastUsed)
+	}
+	data := map[string]any{"CSRF": sess.csrf, "Projects": projects, "Unassigned": unassigned, "SecretCount": secretCount, "ProjectCount": projectCount, "LastUsed": lastUsed}
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>保险库</title>
+<h1>保险库</h1><p class="lead">{{.SecretCount}} 个密钥 · {{.ProjectCount}} 个项目{{if .LastUsed}} · 最近一次调用 {{.LastUsed}}{{end}}</p>
+<div class="actions"><a class="action primary" href="/admin/secrets/new"><span class="ico" aria-hidden="true">＋</span><span><b>新建密钥</b>保存一项凭据</span></a><a class="action" href="/admin/quick/project"><span class="ico" aria-hidden="true">↗</span><span><b>接入项目</b>生成客户端配置</span></a></div>
+{{if gt .Unassigned 0}}<h2>需要处理</h2><div class="group"><a class="row" href="/admin/advanced/secrets?ns=_unassigned"><span class="t">未关联密钥</span><span class="badge">{{.Unassigned}}</span></a></div>{{end}}
+<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/advanced/secrets?ns={{.Name}}"><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span><span class="v">查看</span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
+<h2>更多</h2><div class="group"><a class="row" href="/admin/advanced/secrets"><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="t">高级功能</span></a></div>
+</html>`, data)
+}
+
+func relativeUseTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		if parsed, err = time.Parse(time.RFC3339, value); err != nil {
+			return value
+		}
+	}
+	elapsed := time.Since(parsed)
+	if elapsed < time.Minute {
+		return "刚刚"
+	}
+	if elapsed < time.Hour {
+		return fmt.Sprintf("%d 分钟前", int(elapsed.Minutes()))
+	}
+	if elapsed < 24*time.Hour {
+		return fmt.Sprintf("%d 小时前", int(elapsed.Hours()))
+	}
+	return fmt.Sprintf("%d 天前", int(elapsed.Hours()/24))
 }
 
 func (s *Server) adminAdvanced(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +110,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		rows, e := s.S.DB.Query(`SELECT name FROM namespaces WHERE name<>? ORDER BY name`, unassignedNS)
 		if e != nil {
-			errOut(w, 500, "internal error")
+			adminErrOut(w, 500, "internal error")
 			return
 		}
 		defer rows.Close()
@@ -75,11 +121,11 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 				names = append(names, n)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>平台 <select name="provider"><option value="cloudflare-token">Cloudflare API Token</option><option value="github-pat">GitHub</option><option value="gitea-token">Gitea</option><option value="generic">通用</option></select></label><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label>Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"></label><label><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><button>保存</button></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><b>Cloudflare API Token</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}">{{.}}</option>{{end}}</select></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names})
 		return
 	}
 	if r.Method != http.MethodPost {
-		errOut(w, 405, "method not allowed")
+		adminErrOut(w, 405, "method not allowed")
 		return
 	}
 	_ = r.ParseForm()
@@ -88,12 +134,12 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	ns := unassignedNS
 	if project != "" {
 		if !projectNamePattern.MatchString(project) {
-			errOut(w, 400, "invalid project name")
+			adminErrOut(w, 400, "invalid project name")
 			return
 		}
 		var n int
 		if e := s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name=?`, project).Scan(&n); e != nil || n == 0 {
-			errOut(w, 400, "project not found")
+			adminErrOut(w, 400, "project not found")
 			return
 		}
 		ns = project
@@ -108,20 +154,20 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	case "gitea-token":
 		address := strings.TrimSpace(r.Form.Get("gitea_address"))
 		if address == "" {
-			errOut(w, 400, "Gitea 地址必填，请填写完整地址，例如 https://git.example.com")
+			adminErrOut(w, 400, "Gitea 地址必填，请填写完整地址，例如 https://git.example.com")
 			return
 		}
 		parsed, parseErr := url.Parse(address)
 		if parseErr != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
-			errOut(w, 400, "Gitea 地址无效，请填写完整地址，例如 https://git.example.com")
+			adminErrOut(w, 400, "Gitea 地址无效，请填写完整地址，例如 https://git.example.com")
 			return
 		}
 		if parsed.Scheme != "https" && r.Form.Get("allow_http") != "on" {
-			errOut(w, 400, "Gitea 地址默认必须使用 https://；如确需 HTTP，请勾选「允许 HTTP」")
+			adminErrOut(w, 400, "Gitea 地址默认必须使用 https://；如确需 HTTP，请勾选「允许 HTTP」")
 			return
 		}
 		if !validHostBinding(parsed.Host) {
-			errOut(w, 400, "Gitea 地址中的主机名无效，请填写例如 https://git.example.com")
+			adminErrOut(w, 400, "Gitea 地址中的主机名无效，请填写例如 https://git.example.com")
 			return
 		}
 		host := strings.ToLower(parsed.Hostname())
@@ -133,11 +179,11 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	default:
-		errOut(w, 400, "invalid provider")
+		adminErrOut(w, 400, "invalid provider")
 		return
 	}
 	if providerName == "generic" && len(hosts) == 0 {
-		errOut(w, 400, "allowed domain required for generic platform")
+		adminErrOut(w, 400, "allowed domain required for generic platform")
 		return
 	}
 	q := SecretRequest{NS: ns, Label: strings.TrimSpace(r.Form.Get("label")), Provider: providerName, Type: "token", Value: r.Form.Get("value"), Bindings: Binding{Hosts: hosts, AllowResolve: true, AllowPrivate: r.Form.Get("allow_private") == "on", AllowHTTP: r.Form.Get("allow_http") == "on"}}
@@ -145,20 +191,20 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 		q.Bindings.Headers = map[string]string{"Authorization": "Bearer {v}"}
 		if raw := strings.TrimSpace(r.Form.Get("headers")); raw != "" {
 			if json.Unmarshal([]byte(raw), &q.Bindings.Headers) != nil {
-				errOut(w, 400, "invalid header templates")
+				adminErrOut(w, 400, "invalid header templates")
 				return
 			}
 		}
 	}
 	if r.Form.Get("verify") == "on" {
 		if e := s.verifySecret(q, r.Form.Get("base_url")); e != nil {
-			errOut(w, 400, e.Error())
+			adminErrOut(w, 400, e.Error())
 			return
 		}
 	}
 	m, e := s.save(q, false, "")
 	if e != nil {
-		errOut(w, 400, "could not save secret")
+		adminErrOut(w, 400, "could not save secret")
 		return
 	}
 	s.audit("admin", ns, "write", m.ID, "", "ok", s.sourceIP(r))
@@ -178,7 +224,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	providerLabel := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}[providerName]
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><h1>已保存</h1><dl><dt>名称</dt><dd>{{.Label}}</dd><dt>平台</dt><dd>{{.Provider}}</dd><dt>关联状态</dt><dd>{{.Association}}</dd></dl><p>使用范围：{{.ScopeNote}}</p><p>密钥值不会再次显示。</p><a href="/admin/">返回首页</a> · <a href="/admin/quick/project">接入项目</a>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association, "ScopeNote": scopeNote})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><div class="hero"><span class="seal" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h1>已保存</h1></div><dl><div><dt>名称</dt><dd>{{.Label}}</dd></div><div><dt>平台</dt><dd>{{.Provider}}</dd></div><div><dt>关联状态</dt><dd>{{.Association}}</dd></div>{{if .Hosts}}<div><dt>允许发往</dt><dd>{{.Hosts}}</dd></div>{{end}}</dl><p>使用范围：{{.ScopeNote}}</p><p>密钥值不会再次显示。</p><div class="bar"><div class="bar-actions"><a class="btn secondary" href="/admin/">返回首页</a><a class="btn" href="/admin/quick/project">接入项目</a></div></div>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association, "ScopeNote": scopeNote, "Hosts": strings.Join(hosts, ", ")})
 }
 
 func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
@@ -193,44 +239,58 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 			client = "default"
 		}
 		if project == "" {
-			render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目</h1><p>先填写项目名，再选择要提供给项目的密钥。</p><form method="get" action="/admin/quick/project"><label>项目名（小写字母、数字、连字符） <input name="project" pattern="[a-z0-9][a-z0-9-]{0,63}" required></label><label>客户端名称 <input name="client" value="default" pattern="[A-Za-z0-9._-]{1,64}" required></label><button>下一步：选择密钥</button></form><a href="/admin/">取消</a>`, nil)
+			render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目</h1><p class="lead">第 1 步，共 2 步</p><p>先填写项目名，再选择要提供给项目的密钥。</p><form method="get" action="/admin/quick/project"><label>项目名（小写字母、数字、连字符） <input name="project" pattern="[a-z0-9][a-z0-9-]{0,63}" required></label><label>客户端名称 <input name="client" value="default" pattern="[A-Za-z0-9._-]{1,64}" required></label><button>下一步：选择密钥</button></form><a href="/admin/">取消</a>`, nil)
 			return
 		}
 		if !projectNamePattern.MatchString(project) || !namePattern.MatchString(client) {
-			errOut(w, 400, "invalid project or client name")
+			adminErrOut(w, 400, "invalid project or client name")
 			return
 		}
-		rows, e := s.S.DB.Query(`SELECT id,label,ns FROM secrets WHERE status='active' AND (ns=? OR ns=?) ORDER BY label`, unassignedNS, project)
+		rows, e := s.S.DB.Query(`SELECT id,label,ns,provider,bindings FROM secrets WHERE status='active' AND (ns=? OR ns=?) ORDER BY label`, unassignedNS, project)
 		if e != nil {
-			errOut(w, 500, "internal error")
+			adminErrOut(w, 500, "internal error")
 			return
 		}
 		defer rows.Close()
-		type item struct{ ID, Label, Project string }
+		type item struct{ ID, Label, Project, Provider, Hosts string }
 		var items []item
+		providerNames := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}
 		for rows.Next() {
 			var x item
-			if rows.Scan(&x.ID, &x.Label, &x.Project) == nil {
+			var rawBindings string
+			if rows.Scan(&x.ID, &x.Label, &x.Project, &x.Provider, &rawBindings) == nil {
+				var binding Binding
+				_ = json.Unmarshal([]byte(rawBindings), &binding)
+				x.Provider = providerNames[x.Provider]
+				x.Hosts = strings.Join(binding.Hosts, ", ")
 				items = append(items, x)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目：{{.Project}}</h1><p>选择未关联密钥或已经属于此项目的密钥。提交后会创建一个新的客户端令牌。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="client" value="{{.Client}}"><fieldset><legend>可选密钥</legend>{{range .Items}}<label><input type="checkbox" name="secret" value="{{.ID}}">{{.Label}} — {{if eq .Project "_unassigned"}}未关联{{else}}{{.Project}}{{end}}</label>{{else}}<p>暂无可选密钥。</p>{{end}}</fieldset><button>生成项目配置</button></form><a href="/admin/quick/project">返回上一步</a> · <a href="/admin/">取消</a>`, map[string]any{"CSRF": sess.csrf, "Items": items, "Project": project, "Client": client})
+		var unassignedItems, projectItems []item
+		for _, item := range items {
+			if item.Project == unassignedNS {
+				unassignedItems = append(unassignedItems, item)
+			} else {
+				projectItems = append(projectItems, item)
+			}
+		}
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目：{{.Project}}</h1><p class="lead">第 2 步，共 2 步</p><p>选择未关联密钥或已经属于此项目的密钥。提交后会创建一个新的客户端令牌。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="client" value="{{.Client}}">{{if .UnassignedItems}}<h2>未关联</h2><div class="group">{{range .UnassignedItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if .ProjectItems}}<h2>已在此项目</h2><div class="group">{{range .ProjectItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if not .Items}}<p>暂无可选密钥。</p>{{end}}<div class="bar"><button class="btn block selected-submit">生成项目配置</button></div></form><a href="/admin/quick/project">返回上一步</a> · <a href="/admin/">取消</a>`, map[string]any{"CSRF": sess.csrf, "Items": items, "UnassignedItems": unassignedItems, "ProjectItems": projectItems, "Project": project, "Client": client})
 		return
 	}
 	if r.Method != http.MethodPost {
-		errOut(w, 405, "method not allowed")
+		adminErrOut(w, 405, "method not allowed")
 		return
 	}
 	_ = r.ParseForm()
 	project := strings.TrimSpace(r.Form.Get("project"))
 	clientName := strings.TrimSpace(r.Form.Get("client"))
 	if !projectNamePattern.MatchString(project) || !namePattern.MatchString(clientName) {
-		errOut(w, 400, "invalid project or client name")
+		adminErrOut(w, 400, "invalid project or client name")
 		return
 	}
 	raw := make([]byte, 32)
 	if _, e := rand.Read(raw); e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	token := "swsv_" + base64.RawURLEncoding.EncodeToString(raw)
@@ -240,31 +300,31 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256([]byte(token))
 	projectID, e := randomID()
 	if e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	clientID, e := randomID()
 	if e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	var projectExists int
 	_ = s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name=?`, project).Scan(&projectExists)
 	tx, e := s.S.DB.Begin()
 	if e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, e = tx.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, projectID, project, now)
 	if e != nil {
-		errOut(w, 500, "could not create project")
+		adminErrOut(w, 500, "could not create project")
 		return
 	}
 	_, e = tx.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,cidrs,expires_at,disabled,created_at) VALUES(?,?,?,?,?,'','',0,?)`, clientID, project, clientName, sum[:], "secrets:list,resolve,fetch", now)
 	if e != nil {
-		errOut(w, 500, "could not create client")
+		adminErrOut(w, 500, "could not create client")
 		return
 	}
 	selected := r.Form["secret"]
@@ -275,37 +335,37 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		var b string
 		e = tx.QueryRow(`SELECT ns,type,key_version,ciphertext,dek_wrapped,bindings FROM secrets WHERE id=? AND status='active'`, sid).Scan(&oldNS, &typ, &version, &ct, &wrapped, &b)
 		if e != nil || (oldNS != unassignedNS && oldNS != project) {
-			errOut(w, 400, "selected secret unavailable")
+			adminErrOut(w, 400, "selected secret unavailable")
 			return
 		}
 		var bd Binding
 		if json.Unmarshal([]byte(b), &bd) != nil {
-			errOut(w, 500, "invalid stored policy")
+			adminErrOut(w, 500, "invalid stored policy")
 			return
 		}
 		dek, e := s.unwrapDEK(oldNS, sid, uint32(version), wrapped)
 		if e != nil {
-			errOut(w, 500, "could not move selected secret")
+			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
 		value, e := vaultcrypto.Open(dek, ct, vaultcrypto.SecretAAD(oldNS, sid, typ, uint32(version)))
 		if e != nil {
 			wipe(dek)
-			errOut(w, 500, "could not move selected secret")
+			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
 		newCT, e := vaultcrypto.Seal(dek, value, vaultcrypto.SecretAAD(project, sid, typ, uint32(version)))
 		if e != nil {
 			wipe(dek)
 			wipe(value)
-			errOut(w, 500, "could not move selected secret")
+			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
 		newWrapped, e := s.wrapDEK(project, sid, uint32(version), dek)
 		wipe(dek)
 		wipe(value)
 		if e != nil {
-			errOut(w, 500, "could not move selected secret")
+			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
 		bd.AllowResolve = true
@@ -325,12 +385,12 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		bb, _ := json.Marshal(bd)
 		_, e = tx.Exec(`UPDATE secrets SET ns=?,ciphertext=?,dek_wrapped=?,bindings=? WHERE id=?`, project, newCT, newWrapped, string(bb), sid)
 		if e != nil {
-			errOut(w, 500, "could not move selected secret")
+			adminErrOut(w, 500, "could not move selected secret")
 			return
 		}
 	}
 	if e = tx.Commit(); e != nil {
-		errOut(w, 500, "could not commit project")
+		adminErrOut(w, 500, "could not commit project")
 		return
 	}
 	s.audit("admin", project, "project-client-create", "", "", "ok", s.sourceIP(r))
@@ -350,5 +410,5 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		resultTitle = "追加接入"
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<p>PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</p>{{end}}<p>客户端令牌只显示这一次，请立即复制并妥善保存。</p><p>使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><label>环境变量配置<textarea readonly rows="3">{{.Env}}</textarea></label><label>命令调用示例<textarea readonly rows="2">{{.Run}}</textarea></label><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><label>Git 凭据助手配置<textarea readonly rows="2">{{.Git}}</textarea></label><p>本次关联密钥数：{{.Count}}</p><a href="/admin/">返回首页</a>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected), "BaseURLMissing": baseURLMissing})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<p>PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</p>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><p>使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><section class="secret"><header>环境变量配置<button type="button" class="copy">复制</button></header><pre>{{.Env}}</pre></section><section class="secret"><header>命令调用示例<button type="button" class="copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">本次关联密钥数：{{.Count}}</p><div class="bar"><a class="btn secondary" href="/admin/">返回首页</a></div>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected), "BaseURLMissing": baseURLMissing})
 }
