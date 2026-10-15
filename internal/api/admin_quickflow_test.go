@@ -81,6 +81,9 @@ func TestQuickProjectCreatesClientAndMovesOnlySelectedSecrets(t *testing.T) {
 	if strings.Contains(w.Body.String(), sentinel) || strings.Contains(w.Body.String(), "SWSV-UNSELECTED-SENTINEL") {
 		t.Fatal("project result leaked a secret value")
 	}
+	if !strings.Contains(w.Body.String(), "本次从未关联区选中的密钥仅授权给本次新建的客户端") || !strings.Contains(w.Body.String(), "原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用") {
+		t.Fatal("project result omitted effective secret-use scope")
+	}
 	matches := tokenPattern.FindAllString(w.Body.String(), -1)
 	if len(matches) < 1 {
 		t.Fatal("one-time token/config not present")
@@ -257,6 +260,9 @@ func TestQuickCreateResultNeverEchoesSecret(t *testing.T) {
 	post := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", url.Values{"csrf": {csrf}, "provider": {"github-pat"}, "label": {"quick-create-fake"}, "value": {sentinel}, "project": {"ns1"}})
 	if post.Code != 200 || strings.Contains(post.Body.String(), sentinel) {
 		t.Fatalf("quick create result leaked value or failed: status=%d body=%s", post.Code, post.Body.String())
+	}
+	if !strings.Contains(post.Body.String(), "该项目内所有具备 resolve 权限的客户端均可使用此密钥") {
+		t.Fatal("quick create result omitted project-wide use scope")
 	}
 	if !strings.Contains(logs.String(), "admin secret stored") {
 		t.Fatalf("self-check: expected admin store log, got %q", logs.String())

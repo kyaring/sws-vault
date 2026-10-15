@@ -145,14 +145,14 @@ func (s *Server) adminEnrollTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uri := "otpauth://totp/admin?secret=" + encoded + "&issuer=SWSVault"
-	qr, e := qrSVG(uri)
-	if e != nil {
-		errOut(w, 500, "QR generation failed")
-		return
-	}
+	qr, qrErr := qrSVG(uri)
 	for i := range secret {
 		secret[i] = 0
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>设置双重验证</title><h1>设置双重验证</h1><p>请在 10 分钟内使用验证器扫描二维码，然后输入当前 6 位验证码。刷新页面会生成新二维码。</p><div>{{.QR}}</div><p>无法扫码时，可手动输入密钥：</p><p><code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>6 位验证码 <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required></label><button>确认并启用</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form>`, map[string]any{"QR": template.HTML(qr), "Secret": encoded, "CSRF": sess.csrf})
+	s.renderTOTPEnrollmentPage(w, sess.csrf, encoded, qr, qrErr != nil)
+}
+
+func (s *Server) renderTOTPEnrollmentPage(w http.ResponseWriter, csrf, encoded, qr string, qrFailed bool) {
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>设置双重验证</title><h1>设置双重验证</h1><p>本次密钥有效期为 10 分钟，刷新页面会生成新密钥。</p>{{if .QRFailed}}<p>二维码生成失败，请在验证器中手动输入下方密钥。</p>{{else}}<p>请使用验证器扫描二维码，然后输入当前 6 位验证码。</p><div>{{.QR}}</div>{{end}}<p>无法扫码时，可手动输入密钥：</p><p><code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>6 位验证码 <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required></label><button>确认并启用</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form>`, map[string]any{"QR": template.HTML(qr), "QRFailed": qrFailed, "Secret": encoded, "CSRF": csrf})
 }

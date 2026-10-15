@@ -145,11 +145,13 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	slog.Info("admin secret stored", "namespace", ns, "secret_id", m.ID, "provider", providerName)
 	w.Header().Set("Cache-Control", "no-store")
 	association := "未关联"
+	scopeNote := "该密钥位于未关联区，项目客户端不能读取；请通过「接入项目」选择目标客户端。"
 	if project != "" {
 		association = project
+		scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
 	}
 	providerLabel := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}[providerName]
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><h1>已保存</h1><dl><dt>名称</dt><dd>{{.Label}}</dd><dt>平台</dt><dd>{{.Provider}}</dd><dt>关联状态</dt><dd>{{.Association}}</dd></dl><p>密钥值不会再次显示。</p><a href="/admin/">返回首页</a> · <a href="/admin/quick/project">接入项目</a>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><h1>已保存</h1><dl><dt>名称</dt><dd>{{.Label}}</dd><dt>平台</dt><dd>{{.Provider}}</dd><dt>关联状态</dt><dd>{{.Association}}</dd></dl><p>使用范围：{{.ScopeNote}}</p><p>密钥值不会再次显示。</p><a href="/admin/">返回首页</a> · <a href="/admin/quick/project">接入项目</a>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association, "ScopeNote": scopeNote})
 }
 
 func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
@@ -320,5 +322,5 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		resultTitle = "追加接入"
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1><p>客户端令牌只显示这一次，请立即复制并妥善保存。</p><label>环境变量配置<textarea readonly rows="3">{{.Env}}</textarea></label><label>命令调用示例<textarea readonly rows="2">{{.Run}}</textarea></label><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><label>Git 凭据助手配置<textarea readonly rows="2">{{.Git}}</textarea></label><p>本次关联密钥数：{{.Count}}</p><a href="/admin/">返回首页</a>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected)})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1><p>客户端令牌只显示这一次，请立即复制并妥善保存。</p><p>使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><label>环境变量配置<textarea readonly rows="3">{{.Env}}</textarea></label><label>命令调用示例<textarea readonly rows="2">{{.Run}}</textarea></label><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><label>Git 凭据助手配置<textarea readonly rows="2">{{.Git}}</textarea></label><p>本次关联密钥数：{{.Count}}</p><a href="/admin/">返回首页</a>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Count": len(selected)})
 }

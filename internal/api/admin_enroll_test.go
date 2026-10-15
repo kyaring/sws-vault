@@ -202,6 +202,16 @@ func TestEnrolledAdminCannotLoginWithPasswordOnly(t *testing.T) {
 		t.Fatalf("password-only login status=%d", w.Code)
 	}
 }
+func TestTOTPEnrollmentPageFallsBackToManualSecretWhenQRFails(t *testing.T) {
+	s, _, _, _ := testServer(t, "secrets:list")
+	w := httptest.NewRecorder()
+	s.renderTOTPEnrollmentPage(w, "fake-csrf", "FAKE-TOTP-SECRET", "", true)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "二维码生成失败") || !strings.Contains(body, "FAKE-TOTP-SECRET") || strings.Contains(body, "<svg") {
+		t.Fatalf("QR fallback page status=%d body=%q", w.Code, body)
+	}
+}
+
 func TestQRProvisioningSVGIsInline(t *testing.T) {
 	got, err := qrSVG("otpauth://totp/SWS%20Vault:admin?secret=JBSWY3DPEHPK3PXP&issuer=SWS%20Vault&digits=6&period=30")
 	if err != nil {
