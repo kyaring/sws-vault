@@ -16,7 +16,8 @@ import (
 var (
 	inlineStyleRE   = regexp.MustCompile(`(?i)\bstyle\s*=`)
 	scriptElementRE = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script\s*>`)
-	inlineEventRE   = regexp.MustCompile(`(?i)\son[a-z]+\s*=`)
+	inlineEventRE   = regexp.MustCompile(`(?i)<[^>]+\son[a-z]+\s*=`)
+	adminAssetRefRE = regexp.MustCompile(`/admin/assets/[A-Za-z0-9._-]+`)
 )
 
 func hasInlineScript(body string) bool {
@@ -26,6 +27,15 @@ func hasInlineScript(body string) bool {
 		}
 	}
 	return false
+}
+
+func TestInlineEventCheckIgnoresEscapedUserText(t *testing.T) {
+	if inlineEventRE.MatchString(`&lt;img src=x onerror=alert(1)&gt;`) {
+		t.Fatal("escaped user text was mistaken for an inline event attribute")
+	}
+	if !inlineEventRE.MatchString(`<img src=x onerror=alert(1)>`) {
+		t.Fatal("actual inline event attribute was not detected")
+	}
 }
 
 func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
@@ -69,6 +79,14 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 				t.Errorf("%s missing viewport or admin.css", path)
 			}
 			body := w.Body.String()
+			for _, assetPath := range adminAssetRefRE.FindAllString(body, -1) {
+				assetReq := httptest.NewRequest(http.MethodGet, assetPath, nil)
+				assetResp := httptest.NewRecorder()
+				s.Handler().ServeHTTP(assetResp, assetReq)
+				if assetResp.Code != http.StatusOK {
+					t.Errorf("%s references %s but asset returned %d", path, assetPath, assetResp.Code)
+				}
+			}
 			if (path == "/admin/clients" || path == "/admin/audit") && (!strings.Contains(body, `<thead>`) || !strings.Contains(body, `<tbody>`)) {
 				t.Errorf("%s table missing thead/tbody", path)
 			}
@@ -126,7 +144,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(css), "a.primary") {
+	if strings.Contains(string(css), "a.primary") || !strings.Contains(string(css), ".bar .btn { flex: 1; }") || !strings.Contains(string(css), ".dot {") {
 		t.Fatal("admin.css still contains conflicting a.primary selector")
 	}
 	// Admin HTML errors use the shell; API errors remain JSON.
@@ -135,7 +153,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		t.Fatalf("client page missing compact danger action or has sticky create action")
 	}
 	w = adminPageRequest(s, cookie, http.MethodGet, "/admin/not-a-route", nil)
-	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `class="appbar"`) || !strings.Contains(w.Body.String(), "找不到这个页面") {
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `class="appbar"`) || !strings.Contains(w.Body.String(), "找不到这个页面") || !strings.Contains(w.Body.String(), "<details>") || !strings.Contains(w.Body.String(), "技术详情") {
 		t.Fatalf("admin 404 status=%d body=%s", w.Code, w.Body.String())
 	}
 	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/quick/project", url.Values{"csrf": {csrf}, "project": {"INVALID NAME"}, "client": {"ui-client"}})
@@ -160,6 +178,9 @@ func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
 	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ui-ns2','ui-ns2',?)`, now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ui-ns-reserved','_x',?)`, now); err != nil {
+		t.Fatal(err)
+	}
 	for _, q := range []SecretRequest{
 		{NS: "ns1", Label: "ui-one", Provider: "generic", Type: "token", Value: "fake-one"},
 		{NS: "ui-ns2", Label: "ui-two", Provider: "generic", Type: "token", Value: "fake-two"},
@@ -169,6 +190,12 @@ func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
 		if _, err := s.save(q, false, ""); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := s.save(SecretRequest{NS: "ns1", Label: "ui-disabled", Provider: "generic", Type: "token", Value: "fake-disabled", Bindings: Binding{Hosts: []string{"example.com"}, AllowResolve: true}}, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`UPDATE secrets SET status='disabled' WHERE label='ui-disabled'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := st.DB.Exec(`UPDATE secrets SET last_used_at=? WHERE label='ui-one'`, time.Now().Add(-5*time.Minute).UTC().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
@@ -187,7 +214,7 @@ func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
 	}
 	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/", nil)
 	body := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(body, "3 个密钥 · 2 个项目") || !strings.Contains(body, "最近一次调用 5 分钟前") || !strings.Contains(body, `class="badge">1</span>`) || !strings.Contains(body, "ui-ns2") || !strings.Contains(body, "还没给任何项目，暂不可调用") {
+	if w.Code != http.StatusOK || !strings.Contains(body, "3 个有效密钥 · 2 个项目") || !strings.Contains(body, "最近一次调用 5 分钟前") || !strings.Contains(body, `class="badge">1</span>`) || !strings.Contains(body, "ui-ns2") || strings.Contains(body, "_x") || strings.Count(body, `class="dot"`) < 5 || !strings.Contains(body, "还没给任何项目，暂不可调用") {
 		t.Fatalf("dashboard stats incorrect: status=%d body=%s", w.Code, body)
 	}
 	for table, expected := range before {

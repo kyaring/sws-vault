@@ -462,7 +462,7 @@ func adminErrOut(w http.ResponseWriter, status int, msg string) {
 	case http.StatusInternalServerError:
 		message = "服务暂时无法完成请求，请稍后重试。"
 	}
-	renderStatus(w, status, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>请求未完成</title><h1>请求未完成</h1><div class="note danger"><p>{{.Message}}</p>{{if .Detail}}<p class="hint">{{.Detail}}</p>{{end}}</div><a href="/admin/">返回首页</a></html>`, map[string]string{"Message": message, "Detail": msg})
+	renderStatus(w, status, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>请求未完成</title><h1>请求未完成</h1><div class="note danger"><p>{{.Message}}</p>{{if .Detail}}<details><summary>技术详情</summary><p class="hint">{{.Detail}}</p></details>{{end}}</div><a href="/admin/">返回首页</a></html>`, map[string]string{"Message": message, "Detail": msg})
 }
 
 func render(w http.ResponseWriter, src string, data any) { renderStatus(w, http.StatusOK, src, data) }

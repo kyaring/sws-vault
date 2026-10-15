@@ -30,7 +30,7 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		Name             string
 		Secrets, Clients int
 	}
-	rows, err := s.S.DB.Query(`SELECT n.name,(SELECT count(*) FROM secrets x WHERE x.ns=n.name AND x.status='active'),(SELECT count(*) FROM clients c WHERE c.ns=n.name AND c.disabled=0) FROM namespaces n WHERE n.name<>? ORDER BY n.name`, unassignedNS)
+	rows, err := s.S.DB.Query(`SELECT n.name,(SELECT count(*) FROM secrets x WHERE x.ns=n.name AND x.status='active'),(SELECT count(*) FROM clients c WHERE c.ns=n.name AND c.disabled=0) FROM namespaces n WHERE n.name<>? AND substr(n.name,1,1)<>'_' ORDER BY n.name`, unassignedNS)
 	if err != nil {
 		adminErrOut(w, http.StatusInternalServerError, "internal error")
 		return
@@ -45,11 +45,11 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	var secretCount, projectCount, unassigned int
 	var lastUsed string
-	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets`).Scan(&secretCount); err != nil {
+	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE status='active'`).Scan(&secretCount); err != nil {
 		adminErrOut(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name<>?`, unassignedNS).Scan(&projectCount); err != nil {
+	if err := s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name<>? AND substr(name,1,1)<>'_'`, unassignedNS).Scan(&projectCount); err != nil {
 		adminErrOut(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -66,11 +66,11 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	data := map[string]any{"CSRF": sess.csrf, "Projects": projects, "Unassigned": unassigned, "SecretCount": secretCount, "ProjectCount": projectCount, "LastUsed": lastUsed}
 	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>保险库</title>
-<h1>保险库</h1><p class="lead">{{.SecretCount}} 个密钥 · {{.ProjectCount}} 个项目{{if .LastUsed}} · 最近一次调用 {{.LastUsed}}{{end}}</p>
+<h1>保险库</h1><p class="lead">{{.SecretCount}} 个有效密钥 · {{.ProjectCount}} 个项目{{if .LastUsed}} · 最近一次调用 {{.LastUsed}}{{end}}</p>
 <div class="actions"><a class="action primary" href="/admin/secrets/new"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span><b>新建</b>存一个密钥</span></a><a class="action" href="/admin/quick/project"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span><b>接入项目</b>生成令牌和配置</span></a></div>
 {{if gt .Unassigned 0}}<h2>需要处理</h2><div class="group"><a class="row" href="/admin/advanced/secrets?ns=_unassigned"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">未关联密钥<small>还没给任何项目，暂不可调用</small></span><span class="badge">{{.Unassigned}}</span></a></div>{{end}}
-<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/advanced/secrets?ns={{.Name}}"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
-<h2>更多</h2><div class="group"><a class="row" href="/admin/advanced/secrets"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 13.5l2-1.5-2-1.5-.7-2.2-2.5-.2L14.5 6 12 5l-2.5 1-.8 2.1-2.5.2-.7 2.2-2 1.5 2 1.5.7 2.2 2.5.2.8 2.1 2.5 1 2.5-1 .8-2.1 2.5-.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span><span class="t">高级功能</span></a></div>
+<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/advanced/secrets?ns={{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
+<h2>更多</h2><div class="group"><a class="row" href="/admin/advanced/secrets"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 13.5l2-1.5-2-1.5-.7-2.2-2.5-.2L14.5 6 12 5l-2.5 1-.8 2.1-2.5.2-.7 2.2-2 1.5 2 1.5.7 2.2 2.5.2.8 2.1 2.5 1 2.5-1 .8-2.1 2.5-.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span><span class="t">高级功能</span></a></div>
 </html>`, data)
 }
 

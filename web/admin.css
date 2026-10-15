@@ -149,6 +149,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible { outline: 3px solid v
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
   background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-top: 1px solid var(--line); }
 .bar > * { max-width: 528px; margin: 0 auto; display: flex; width: 100%; }
+.bar .btn { flex: 1; }
 
 /* —— 提示块 —— */
 .note { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius-s); font-size: 14px; line-height: 1.5; margin: 0 0 16px; background: var(--accent-soft); color: var(--text); }

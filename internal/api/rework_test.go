@@ -43,17 +43,28 @@ func TestResolveRequiresAllowResolveAndNoStore(t *testing.T) {
 	}
 }
 
-func TestAdminAssetDirectoryListingDisabled(t *testing.T) {
+func TestAdminAssetAllowListAndContentTypes(t *testing.T) {
 	s, _, _, _ := testServer(t, "secrets:list")
 	for _, tc := range []struct {
-		path string
-		want int
-	}{{"/admin/assets/", 404}, {"/admin/assets/admin.css", 200}, {"/admin/assets/not-real.txt", 404}} {
+		path, contentType string
+		want              int
+	}{{"/admin/assets/admin.css", "css", http.StatusOK}, {"/admin/assets/admin.js", "javascript", http.StatusOK}, {"/admin/assets/assets.go", "", http.StatusNotFound}, {"/admin/assets/x.js", "", http.StatusNotFound}, {"/admin/assets/", "", http.StatusNotFound}} {
 		r := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
 		if w.Code != tc.want {
 			t.Fatalf("%s status=%d want=%d", tc.path, w.Code, tc.want)
+		}
+		if tc.want == http.StatusOK {
+			if !strings.Contains(strings.ToLower(w.Header().Get("Content-Type")), tc.contentType) {
+				t.Errorf("%s Content-Type=%q want to contain %q", tc.path, w.Header().Get("Content-Type"), tc.contentType)
+			}
+			if w.Body.Len() == 0 {
+				t.Errorf("%s returned an empty body", tc.path)
+			}
+			if tc.path == "/admin/assets/admin.css" && !strings.Contains(w.Body.String(), ".bar .btn { flex: 1; }") {
+				t.Error("admin.css missing equal-width sticky action rule")
+			}
 		}
 	}
 }
