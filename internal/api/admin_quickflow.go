@@ -70,8 +70,8 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 <h1>保险库</h1><p class="lead">{{.SecretCount}} 个有效密钥 · {{.ProjectCount}} 个项目{{if .LastUsed}} · 最近一次调用 {{.LastUsed}}{{end}}</p>
 <div class="actions"><a class="action primary" href="/admin/secrets/new"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span><b>新建</b>存一个密钥</span></a><a class="action" href="/admin/quick/project"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span><b>接入项目</b>生成令牌和配置</span></a></div>
 {{if gt .Unassigned 0}}<h2>需要处理</h2><div class="group"><a class="row" href="/admin/advanced/secrets?ns=_unassigned"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">未关联密钥<small>还没给任何项目，暂不可调用</small></span><span class="badge">{{.Unassigned}}</span></a></div>{{end}}
-<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/advanced/secrets?ns={{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
-<h2>更多</h2><div class="group"><a class="row" href="/admin/advanced/secrets"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 13.5l2-1.5-2-1.5-.7-2.2-2.5-.2L14.5 6 12 5l-2.5 1-.8 2.1-2.5.2-.7 2.2-2 1.5 2 1.5.7 2.2 2.5.2.8 2.1 2.5 1 2.5-1 .8-2.1 2.5-.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span><span class="t">高级功能</span></a></div>
+<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/projects/{{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
+<h2>更多</h2><div class="group"><a class="row" href="/admin/projects"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">项目<small>建项目、放密钥、发通行证</small></span></a><a class="row" href="/admin/advanced/secrets"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 13.5l2-1.5-2-1.5-.7-2.2-2.5-.2L14.5 6 12 5l-2.5 1-.8 2.1-2.5.2-.7 2.2-2 1.5 2 1.5.7 2.2 2.5.2.8 2.1 2.5 1 2.5-1 .8-2.1 2.5-.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span><span class="t">高级功能</span></a></div>
 </html>`, data)
 }
 
@@ -109,6 +109,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
+		preselected := strings.TrimSpace(r.URL.Query().Get("project"))
 		rows, e := s.S.DB.Query(`SELECT name FROM namespaces WHERE name<>? ORDER BY name`, unassignedNS)
 		if e != nil {
 			adminErrOut(w, 500, "internal error")
@@ -122,7 +123,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 				names = append(names, n)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}">{{.}}</option>{{end}}</select><small class="hint">不关联时，任何客户端都无法调用。</small></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}"{{if eq . $.SelectedProject}} selected{{end}}>{{.}}</option>{{end}}</select><small class="hint">不关联时，任何客户端都无法调用。</small></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form><p><a href="/admin/">取消</a></p>`, map[string]any{"CSRF": sess.csrf, "Projects": names, "SelectedProject": preselected})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -414,18 +415,50 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 	for _, sid := range selected {
 		s.audit("admin", project, "secret-associate", sid, "", "ok", s.sourceIP(r))
 	}
+	resultTitle := "已接入"
+	if projectExists != 0 {
+		resultTitle = "追加接入"
+	}
+	s.renderPassport(w, passportView{
+		Project:      project,
+		Title:        resultTitle,
+		Token:        token,
+		AllowResolve: allowResolve,
+		CIDRs:        strings.Join(cidrs, ", "),
+		Count:        len(selected),
+		ScopeNote:    "本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。",
+		BackHref:     "/admin/",
+		BackLabel:    "返回首页",
+	})
+}
+
+type passportView struct {
+	Project      string
+	Title        string
+	Token        string
+	AllowResolve bool
+	CIDRs        string
+	Count        int
+	ScopeNote    string
+	BackHref     string
+	BackLabel    string
+}
+
+// renderPassport 渲染一次性的通行证结果页；快捷「接入项目」与项目页共用同一套渲染。
+func (s *Server) renderPassport(w http.ResponseWriter, v passportView) {
 	base := strings.TrimRight(s.C.PublicBaseURL, "/")
 	baseURLMissing := base == ""
 	if baseURLMissing {
 		base = "<SWSV_URL>"
 	}
-	env := fmt.Sprintf("SWSV_URL=%s\nSWSV_TOKEN=%s\nSWSV_NS=%s", base, token, project)
-	runExample := fmt.Sprintf("SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault run --secret vault:%s/<secret-id> -- <command>", base, token, project, project)
-	gitExample := fmt.Sprintf("git config --global credential.helper '!SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault git-credential'", base, token, project)
-	fetchExample := fmt.Sprintf(`export SWSV_URL=%s
-export SWSV_TOKEN=%s
+	env := fmt.Sprintf("SWSV_URL=%s\nSWSV_TOKEN=%s\nSWSV_NS=%s", base, v.Token, v.Project)
+	runExample := fmt.Sprintf("SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault run --secret vault:%s/<secret-id> -- <command>", base, v.Token, v.Project, v.Project)
+	gitExample := fmt.Sprintf("git config --global credential.helper '!SWSV_URL=%s SWSV_TOKEN=%s SWSV_NS=%s swsvault git-credential'", base, v.Token, v.Project)
+	// 代发示例用 read -rs 交互读入令牌：令牌本体不出现在页面和 shell 历史里。
+	fetchExample := fmt.Sprintf(`read -rs SWSV_TOKEN
+export SWSV_URL=%s
 export SWSV_NS=%s
-printf 'Authorization: Bearer %%s\n' "$SWSV_TOKEN" | curl -sS -X POST "$SWSV_URL/v1/fetch" -H @- -H 'Content-Type: application/json' -d '{"secret":"vault:%s/<secret-id>","method":"GET","url":"https://api.example.com/"}'`, base, token, project, project)
+printf 'Authorization: Bearer %%s\n' "$SWSV_TOKEN" | curl -sS -X POST "$SWSV_URL/v1/fetch" -H @- -H 'Content-Type: application/json' -d '{"secret":"vault:%s/<secret-id>","method":"GET","url":"https://api.example.com/"}'`, base, v.Project, v.Project)
 	mcpExample := fmt.Sprintf(`{
   "mcpServers": {
     "sws-vault": {
@@ -435,16 +468,8 @@ printf 'Authorization: Bearer %%s\n' "$SWSV_TOKEN" | curl -sS -X POST "$SWSV_URL
     }
   }
 }`, base)
-	resultTitle := "已接入"
-	if projectExists != 0 {
-		resultTitle = "追加接入"
-	}
-	cidrNote := ""
-	if cidrList != "" {
-		cidrNote = strings.Join(cidrs, ", ")
-	}
 	w.Header().Set("Cache-Control", "no-store")
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section>{{if .AllowResolve}}<section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">此令牌可以取出明文，不要交给 AI。</p>{{else}}<section class="secret"><header>代发调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Fetch}}</pre></section><p class="hint">令牌只放在环境变量或 -H @- 里，不会出现在命令行参数中。</p><section class="secret"><header>MCP 配置示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.MCP}}</pre></section><p class="hint">此令牌只能代发请求，不能取出明文。</p>{{end}}{{if .CIDRs}}<p class="hint">限制来源 IP：{{.CIDRs}}</p>{{end}}<p class="hint">本次关联密钥数：{{.Count}}</p><p class="hint">使用范围：本次从未关联区选中的密钥仅授权给本次新建的客户端；原已属于此项目的密钥保留原有范围，并将本次客户端加入允许列表。原本未限制客户端的项目密钥仍可由项目内所有具备权限的客户端使用。</p><div class="bar"><a class="btn secondary" href="/admin/">返回首页</a></div>`, map[string]any{"Project": project, "Title": resultTitle, "Env": env, "Run": runExample, "Git": gitExample, "Fetch": fetchExample, "MCP": mcpExample, "Count": len(selected), "BaseURLMissing": baseURLMissing, "AllowResolve": allowResolve, "CIDRs": cidrNote})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目配置</title><h1>{{.Project}} {{.Title}}</h1>{{if .BaseURLMissing}}<div class="note warn">PUBLIC_BASE_URL 未配置，请把占位符替换为面板地址。</div>{{end}}<div class="note danger">客户端令牌只显示这一次，请立即复制并妥善保存。</div><section class="secret"><header>环境变量配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Env}}</pre></section>{{if .AllowResolve}}<section class="secret"><header>命令调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Run}}</pre></section><p>该命令将密钥值注入子进程环境变量 SWSV_SECRET。</p><section class="secret"><header>Git 凭据助手配置<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Git}}</pre></section><p class="hint">此令牌可以取出明文，不要交给 AI。</p>{{else}}<section class="secret"><header>代发调用示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.Fetch}}</pre></section><p class="hint">令牌只放在环境变量或 -H @- 里，不会出现在命令行参数中，也不会进 shell 历史。</p><section class="secret"><header>MCP 配置示例<button type="button" class="btn small secondary copy">复制</button></header><pre>{{.MCP}}</pre></section><p class="hint">MCP 客户端是否展开 ${SWSV_TOKEN} 由它自己决定；不展开的客户端要把令牌填进它自己的密钥配置，不要写进会提交到仓库的文件。</p><p class="hint">此令牌只能代发请求，不能取出明文。</p>{{end}}{{if .CIDRs}}<p class="hint">限制来源 IP：{{.CIDRs}}</p>{{end}}<p class="hint">本次关联密钥数：{{.Count}}</p><p class="hint">使用范围：{{.ScopeNote}}</p><div class="bar"><a class="btn secondary" href="{{.BackHref}}">{{.BackLabel}}</a></div>`, map[string]any{"Project": v.Project, "Title": v.Title, "Env": env, "Run": runExample, "Git": gitExample, "Fetch": fetchExample, "MCP": mcpExample, "Count": v.Count, "BaseURLMissing": baseURLMissing, "AllowResolve": v.AllowResolve, "CIDRs": v.CIDRs, "ScopeNote": v.ScopeNote, "BackHref": v.BackHref, "BackLabel": v.BackLabel})
 }
 
 // normalizeCIDRs 规范化逗号分隔的 IP / CIDR：单个 IPv4 补 /32，单个 IPv6 补 /128，CIDR 归一为网络地址。

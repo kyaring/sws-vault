@@ -185,7 +185,7 @@ func TestRenderedPanelHasNoForbiddenLegacyWords(t *testing.T) {
 	sessions.Lock()
 	sessions.m[cookie] = adminSession{csrf: "panel-word-csrf", created: time.Now(), last: time.Now()}
 	sessions.Unlock()
-	for _, path := range []string{"/admin/", "/admin/advanced", "/admin/advanced/secrets", "/admin/namespaces", "/admin/clients", "/admin/audit", "/admin/intents/new", "/admin/secrets/new", "/admin/secrets/" + secret.ID + "/bindings", "/admin/secrets/" + secret.ID + "/rotate"} {
+	for _, path := range []string{"/admin/", "/admin/advanced", "/admin/advanced/secrets", "/admin/projects", "/admin/projects/new", "/admin/clients", "/admin/audit", "/admin/intents/new", "/admin/secrets/new", "/admin/secrets/" + secret.ID + "/bindings", "/admin/secrets/" + secret.ID + "/rotate"} {
 		w := adminPageRequest(s, cookie, http.MethodGet, path, nil)
 		if w.Code != 200 {
 			t.Fatalf("%s status=%d", path, w.Code)

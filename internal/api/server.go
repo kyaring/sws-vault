@@ -41,6 +41,8 @@ type Binding struct {
 	AllowPrivate   bool              `json:"allow_private"`
 	AllowHTTP      bool              `json:"allow_http"`
 	AllowedClients []string          `json:"allowed_clients"`
+	// NoClientAccess 为 true 表示「不授权给任何接入方」：即使 AllowedClients 为空也一律拒绝。
+	NoClientAccess bool `json:"no_client_access,omitempty"`
 }
 type SecretRequest struct {
 	NS       string  `json:"ns"`

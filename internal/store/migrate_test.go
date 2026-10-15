@@ -61,3 +61,46 @@ func TestMigrationAddsTOTPColumnsWithoutDowngradingExistingAdmin(t *testing.T) {
 		t.Fatalf("legacy admin migration changed state: enrolled=%d must_change=%d secret=%v pending=%v expires=%q", enrolled, mustChange, secret, pending, expires)
 	}
 }
+
+func TestMigrationAddsDescriptionAndNoteWithoutTouchingLegacyRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-project.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version(version) VALUES(2);
+CREATE TABLE namespaces(id TEXT PRIMARY KEY,name TEXT UNIQUE NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE clients(id TEXT PRIMARY KEY,ns TEXT NOT NULL,name TEXT NOT NULL,token_hash BLOB NOT NULL UNIQUE,scopes TEXT NOT NULL,cidrs TEXT NOT NULL DEFAULT '',expires_at TEXT NOT NULL DEFAULT '',disabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
+INSERT INTO namespaces(id,name,created_at) VALUES('legacy-ns','legacy-ns','2026-01-01T00:00:00Z');
+INSERT INTO clients(id,ns,name,token_hash,scopes,cidrs,expires_at,disabled,created_at) VALUES('legacy-client','legacy-ns','legacy',X'01','secrets:list','','',0,'2026-01-01T00:00:00Z');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	var description, note, name, scopes string
+	if err := s.DB.QueryRow(`SELECT description FROM namespaces WHERE name='legacy-ns'`).Scan(&description); err != nil {
+		t.Fatalf("namespaces.description missing: %v", err)
+	}
+	if err := s.DB.QueryRow(`SELECT note FROM clients WHERE id='legacy-client'`).Scan(&note); err != nil {
+		t.Fatalf("clients.note missing: %v", err)
+	}
+	if description != "" || note != "" {
+		t.Fatalf("legacy rows changed: description=%q note=%q", description, note)
+	}
+	if err := s.DB.QueryRow(`SELECT name FROM namespaces WHERE id='legacy-ns'`).Scan(&name); err != nil || name != "legacy-ns" {
+		t.Fatalf("namespace row changed: %q %v", name, err)
+	}
+	if err := s.DB.QueryRow(`SELECT scopes FROM clients WHERE id='legacy-client'`).Scan(&scopes); err != nil || scopes != "secrets:list" {
+		t.Fatalf("client row changed: %q %v", scopes, err)
+	}
+}

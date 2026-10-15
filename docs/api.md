@@ -31,6 +31,24 @@ A secret reference has the form `vault:<namespace>/<id>`. The metadata response 
 
 The admin panel's binding-update action validates host entries and returns HTTP 400 for malformed hosts, URLs with paths or userinfo, query/fragment components, and invalid ports. Host matching remains exact after hostname case normalization.
 
+### Admin panel routes
+
+The admin panel is server-rendered HTML under `/admin/`; every write needs the `sws_admin` session cookie plus the `csrf` form field, otherwise the request is rejected with HTTP 403.
+
+| Method and path | Behavior |
+|---|---|
+| `GET /admin/` | Dashboard: secret/project counts and grouped entries |
+| `GET /admin/projects` | Project list (name, truncated description, secret and access-pass counts). The reserved unassigned bucket is never listed |
+| `GET, POST /admin/projects/new` | Create a project. `name` is `[A-Za-z0-9._-]{1,64}` and `description` is at most 200 runes; reserved `_`-prefixed names, duplicates, and over-long descriptions return HTTP 400 without creating a row |
+| `GET /admin/projects/{name}` | Project detail: editable description, the project's secrets, and its access passes |
+| `POST /admin/projects/{name}/description` | Update the description (at most 200 runes) |
+| `GET, POST /admin/projects/{name}/secrets/import` | Move secrets out of the unassigned bucket into the project. Imported secrets get `allow_resolve=false`, are authorized to no client, and must be selected when an access pass is created |
+| `GET, POST /admin/projects/{name}/clients/new` | Create an access pass. `name` must be unique inside the project, `note` is at most 100 runes, and at least one `secret` must be selected. Scope, `allow_resolve`, and source-CIDR semantics match the one-step quick flow |
+| `GET /admin/namespaces` | 303 redirect to `/admin/projects` |
+| `POST /admin/namespaces` | Legacy project creation, kept for compatibility |
+
+`namespaces.description` and `clients.note` are added by an idempotent additive migration (`PRAGMA table_info` + `ALTER TABLE`); existing rows keep their data and the columns default to the empty string. A client whose secret binding carries `no_client_access=true` is rejected even when `allowed_clients` is empty, which is how imported secrets stay unauthorized until an access pass selects them.
+
 ### MCP tools
 
 `tools/list` exposes `vault_list`, `vault_fetch`, and `vault_intent`. `vault_list` reuses namespace/scope checks; `vault_fetch` reuses the REST fetch engine and redaction; `vault_intent` creates the same one-time entry flow. The MCP handler returns JSON-RPC errors without embedding credential values in error text.

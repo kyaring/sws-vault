@@ -19,8 +19,7 @@ import (
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -45,25 +44,13 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", name, "project-create", "", "", "ok", s.sourceIP(r))
-		http.Redirect(w, r, "/admin/namespaces", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/projects/"+name, http.StatusSeeOther)
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT name,created_at FROM namespaces WHERE name<>'_unassigned' ORDER BY name`)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	defer rows.Close()
-	type item struct{ Name, Created string }
-	var list []item
-	for rows.Next() {
-		var v item
-		if rows.Scan(&v.Name, &v.Created) == nil {
-			list = append(list, v)
-		}
-	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>项目</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input name="name" required><button class="btn block">创建</button></form><ul>{{range .Items}}<li>{{.Name}} — {{.Created}}</li>{{end}}</ul><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	// 旧的「项目」页已并入 /admin/projects，浏览时直接跳转。
+	http.Redirect(w, r, "/admin/projects", http.StatusSeeOther)
 }
+
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {

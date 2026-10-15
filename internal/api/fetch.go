@@ -41,6 +41,10 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request, c Client) {
 		errOut(w, 500, "internal error")
 		return
 	}
+	if bd.NoClientAccess {
+		errOut(w, 403, "forbidden")
+		return
+	}
 	if len(bd.AllowedClients) > 0 {
 		found := false
 		for _, v := range bd.AllowedClients {
