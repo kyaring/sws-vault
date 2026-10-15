@@ -7,9 +7,13 @@ import (
 	"encoding/json"
 	"github.com/kyaring/sws-vault/internal/auth"
 	"github.com/kyaring/sws-vault/internal/panel"
+	stdhtml "html"
 	"html/template"
 
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -170,6 +174,10 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.URL.Path != "/admin/advanced/secrets" {
+		adminErrOut(w, http.StatusNotFound, "not found")
+		return
+	}
 	nsFilter := r.URL.Query().Get("ns")
 	displayNSFilter := nsFilter
 	if nsFilter == "未关联" {
@@ -192,7 +200,7 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 	query += " ORDER BY created_at DESC LIMIT 200"
 	rows, e := s.S.DB.Query(query, args...)
 	if e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -219,42 +227,46 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		NS       string
 		Provider string
 	}{sess.csrf, items, displayNSFilter, providerFilter}
-	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>退出</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
+	const page = `<!doctype html><html lang="zh"><meta charset="utf-8"><title>SWS Vault</title><h1>SWS Vault 管理面板</h1><p><a href="/admin/secrets/new">录入凭据</a> · <a href="/admin/namespaces">项目</a> · <a href="/admin/clients">客户端</a> · <a href="/admin/audit">审计事件</a> · <a href="/admin/intents/new">一次性录入链接</a></p><form method="get" action="/admin/"><label>项目<input name="ns" value="{{.NS}}"></label><label>平台<input name="provider" value="{{.Provider}}"></label><button>筛选</button></form><table><tr><th>ID</th><th>项目</th><th>标签</th><th>平台</th><th>预览</th><th>指纹</th><th>状态</th><th>使用范围</th><th>最近使用</th></tr>{{range .Items}}<tr><td>{{.ID}} <a href="/admin/secrets/{{.ID}}/bindings">使用范围</a> <a href="/admin/secrets/{{.ID}}/rotate">轮换</a><form method="post" action="/admin/secrets/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td><td>{{.NS}}</td><td>{{.Label}}</td><td>{{.Provider}}</td><td>{{.Preview}}</td><td>{{.Fingerprint}}</td><td>{{.Status}}</td><td>{{.Bindings}}</td><td>{{.LastUsed}}</td></tr>{{end}}</table></html>`
 	render(w, page, data)
 }
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		b := make([]byte, 32)
 		if _, e := rand.Read(b); e != nil {
-			errOut(w, 500, "internal error")
+			adminErrOut(w, 500, "internal error")
 			return
 		}
 		csrf := base64.RawURLEncoding.EncodeToString(b)
 		http.SetCookie(w, &http.Cookie{Name: "sv_login_csrf", Value: csrf, Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.C.PublicBaseURL, "https://")})
 		var enrolled int = 1
 		_ = s.S.DB.QueryRow(`SELECT totp_enrolled FROM admins WHERE id=1`).Scan(&enrolled)
-		totpField := `<label>验证码 <input name="totp" inputmode="numeric" pattern="[0-9]{6}" required></label>`
+		totpField := `<label>验证码 <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>`
 		if enrolled == 0 {
 			totpField = ""
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>登录</title><h1>SWS Vault 登录</h1><form method="post"><input type="hidden" name="csrf" value="`+template.HTMLEscapeString(csrf)+`"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label>`+totpField+`<button>登录</button></form></html>`, nil)
+		httpNote := ""
+		if !strings.HasPrefix(s.C.PublicBaseURL, "https://") {
+			httpNote = `<p class="note warn">明文 HTTP 只录测试密钥。</p>`
+		}
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>登录</title><section class="auth"><div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg></div><h1>SWS Vault 登录</h1>`+httpNote+`<form method="post"><input type="hidden" name="csrf" value="`+template.HTMLEscapeString(csrf)+`"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label>`+totpField+`<button>登录</button></form></section></html>`, nil)
 		return
 	}
 	if r.Method != http.MethodPost {
-		errOut(w, 405, "method not allowed")
+		adminErrOut(w, 405, "method not allowed")
 		return
 	}
 	_ = r.ParseForm()
 	ck, e := r.Cookie("sv_login_csrf")
 	if e != nil || subtle.ConstantTimeCompare([]byte(ck.Value), []byte(r.Form.Get("csrf"))) != 1 {
-		errOut(w, 403, "csrf rejected")
+		adminErrOut(w, 403, "csrf rejected")
 		return
 	}
 	_, _ = s.S.DB.Exec(`CREATE TABLE IF NOT EXISTS admin_state(id INTEGER PRIMARY KEY CHECK(id=1),failed_count INTEGER NOT NULL DEFAULT 0,locked_until TEXT NOT NULL DEFAULT "",last_totp_step INTEGER NOT NULL DEFAULT -1)`)
 	ip := s.sourceIP(r)
 	if s.loginLocked(ip) {
 		s.audit("admin", "", "login", "", "", "locked", s.sourceIP(r))
-		errOut(w, 429, "login temporarily locked")
+		adminErrOut(w, 429, "login temporarily locked")
 		return
 	}
 	var stored, salt, secret []byte
@@ -263,14 +275,14 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
-		errOut(w, 401, "invalid credentials")
+		adminErrOut(w, 401, "invalid credentials")
 		return
 	}
 	got, e := auth.HashPassword(r.Form.Get("password"), salt)
 	if e != nil || subtle.ConstantTimeCompare(got, stored) != 1 {
 		s.loginFailure(ip)
 		s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
-		errOut(w, 401, "invalid credentials")
+		adminErrOut(w, 401, "invalid credentials")
 		return
 	}
 	var step int64 = -1
@@ -282,7 +294,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		if !valid {
 			s.loginFailure(ip)
 			s.audit("admin", "", "login", "", "", "failed", s.sourceIP(r))
-			errOut(w, 401, "invalid credentials")
+			adminErrOut(w, 401, "invalid credentials")
 			return
 		}
 	}
@@ -294,7 +306,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token := make([]byte, 32)
 	if _, e = rand.Read(token); e != nil {
-		errOut(w, 500, "internal error")
+		adminErrOut(w, 500, "internal error")
 		return
 	}
 	raw := base64.RawURLEncoding.EncodeToString(token)
@@ -380,7 +392,7 @@ func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) (adminSess
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
 		if subtle.ConstantTimeCompare([]byte(r.Form.Get("csrf")), []byte(v.csrf)) != 1 {
-			errOut(w, 403, "csrf rejected")
+			adminErrOut(w, 403, "csrf rejected")
 			return adminSession{}, false
 		}
 	}
@@ -408,7 +420,7 @@ func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) (adminSess
 }
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		errOut(w, 405, "method not allowed")
+		adminErrOut(w, 405, "method not allowed")
 		return
 	}
 	sess, ok := s.adminSession(w, r)
@@ -425,4 +437,128 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	s.audit("admin", "", "logout", "", "", "ok", s.sourceIP(r))
 	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 }
-func render(w http.ResponseWriter, src string, data any) { panel.Render(w, src, data) }
+
+var (
+	panelViewportRE = regexp.MustCompile(`<meta name="viewport"[^>]*>`)
+	panelStartRE    = regexp.MustCompile(`(?i)<(h1|form|p|section|div)\b`)
+	panelTableRE    = regexp.MustCompile(`(?is)<table\b[^>]*>.*?</table>`)
+	panelRowRE      = regexp.MustCompile(`(?is)<tr\b[^>]*>.*?</tr>`)
+	panelTHRE       = regexp.MustCompile(`(?is)<th\b[^>]*>(.*?)</th>`)
+	panelTDRE       = regexp.MustCompile(`(?i)<td\b([^>]*)>`)
+	panelTagRE      = regexp.MustCompile(`(?is)<[^>]+>`)
+)
+
+func adminErrOut(w http.ResponseWriter, status int, msg string) {
+	message := msg
+	switch status {
+	case http.StatusBadRequest:
+		message = "请求无效，请检查输入后重试。"
+	case http.StatusForbidden:
+		message = "请求校验失败，请刷新页面后重试。"
+	case http.StatusNotFound:
+		message = "找不到这个页面。"
+	case http.StatusMethodNotAllowed:
+		message = "不支持的请求方法。"
+	case http.StatusInternalServerError:
+		message = "服务暂时无法完成请求，请稍后重试。"
+	}
+	renderStatus(w, status, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>请求未完成</title><h1>请求未完成</h1><div class="note danger"><p>{{.Message}}</p>{{if .Detail}}<details><summary>技术详情</summary><p class="hint">{{.Detail}}</p></details>{{end}}</div><a href="/admin/">返回首页</a></html>`, map[string]string{"Message": message, "Detail": msg})
+}
+
+func render(w http.ResponseWriter, src string, data any) { renderStatus(w, http.StatusOK, src, data) }
+
+func renderStatus(w http.ResponseWriter, status int, src string, data any) {
+	if !strings.Contains(src, `name="viewport"`) {
+		src = strings.Replace(src, `<meta charset="utf-8">`, `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`, 1)
+	} else {
+		src = panelViewportRE.ReplaceAllString(src, `<meta name="viewport" content="width=device-width,initial-scale=1">`)
+	}
+	src = strings.ReplaceAll(src, `<link rel="stylesheet" href="/admin/assets/admin.css">`, "")
+	if !strings.Contains(src, `/admin/assets/admin.js`) {
+		src = strings.Replace(src, `<meta charset="utf-8">`, `<meta charset="utf-8"><script src="/admin/assets/admin.js" defer></script>`, 1)
+	}
+	if !strings.Contains(src, `class="appbar"`) {
+		if loc := panelStartRE.FindStringIndex(src); loc != nil {
+			shell := `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
+			if strings.Contains(src, `<title>设置双重验证</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a href="/admin/">首页</a></header><main class="page">`
+			}
+			if strings.Contains(src, `<title>保险库</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form></header><main class="page">`
+			}
+			if strings.Contains(src, `name="secret"`) && strings.Contains(src, `<title>接入项目</title>`) {
+				shell = `<body><header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span><a class="back" href="/admin/quick/project">‹ 上一步</a></header><main class="page">`
+			}
+			src = src[:loc[0]] + shell + src[loc[0]:]
+			if end := strings.LastIndex(strings.ToLower(src), `</html>`); end >= 0 {
+				src = src[:end] + `</main></body>` + src[end:]
+			} else {
+				src += `</main></body></html>`
+			}
+		}
+	}
+	recorder := httptest.NewRecorder()
+	panel.Render(recorder, src, data)
+	body := addPanelTableLabels(recorder.Body.String())
+	if recorder.Code >= http.StatusBadRequest {
+		status = recorder.Code
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
+}
+
+func addPanelTableLabels(document string) string {
+	return panelTableRE.ReplaceAllStringFunc(document, func(table string) string {
+		openEnd := strings.Index(table, ">")
+		closeStart := strings.LastIndex(strings.ToLower(table), "</table>")
+		if openEnd < 0 || closeStart < openEnd {
+			return table
+		}
+		opening, inner := table[:openEnd+1], table[openEnd+1:closeStart]
+		rows := panelRowRE.FindAllString(inner, -1)
+		if len(rows) == 0 {
+			return table
+		}
+		var labels []string
+		headerIndex := -1
+		for i, row := range rows {
+			if strings.Contains(strings.ToLower(row), "<th") {
+				headerIndex = i
+				for _, match := range panelTHRE.FindAllStringSubmatch(row, -1) {
+					labels = append(labels, strings.TrimSpace(stdhtml.UnescapeString(panelTagRE.ReplaceAllString(match[1], ""))))
+				}
+				break
+			}
+		}
+		if headerIndex < 0 {
+			return table
+		}
+		for i := range rows {
+			if i == headerIndex || strings.Contains(strings.ToLower(rows[i]), "<th") {
+				continue
+			}
+			cellIndex := 0
+			rows[i] = panelTDRE.ReplaceAllStringFunc(rows[i], func(tag string) string {
+				label := ""
+				if cellIndex < len(labels) {
+					label = labels[cellIndex]
+				}
+				cellIndex++
+				if label == "" || strings.Contains(strings.ToLower(tag), "data-label=") {
+					return tag
+				}
+				return strings.TrimSuffix(tag, ">") + ` data-label="` + template.HTMLEscapeString(label) + `">`
+			})
+		}
+		var bodyRows []string
+		for i, row := range rows {
+			if i != headerIndex {
+				bodyRows = append(bodyRows, row)
+			}
+		}
+		return opening + `<thead>` + rows[headerIndex] + `</thead><tbody>` + strings.Join(bodyRows, "") + `</tbody></table>`
+	})
+}

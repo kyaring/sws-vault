@@ -95,7 +95,8 @@ func (s *Server) routes() {
 				return
 			}
 		}
-		if r.PathValue("asset") != "admin.css" || strings.Contains(r.URL.Path, "..") {
+		asset := r.PathValue("asset")
+		if (asset != "admin.css" && asset != "admin.js") || strings.Contains(r.URL.Path, "..") {
 			http.NotFound(w, r)
 			return
 		}
