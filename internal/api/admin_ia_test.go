@@ -503,14 +503,18 @@ func TestNewSecretFlowAndProjectMove(t *testing.T) {
 		t.Fatalf("刚放进项目的密钥不应授权给任何人：%+v", bd)
 	}
 
-	// 添加接入方：带 ?secret= 只预勾该密钥；不带参数保持原有默认（全勾）
+	// 添加接入方（F）：带 ?secret= 只预勾该密钥；不带参数时默认一个都不勾。
+	checkedSecrets := regexp.MustCompile(`name="secret" value="[^"]+" checked>`)
 	addOne := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/zz-project/clients/new?secret="+loose, nil).Body.String()
-	if strings.Count(addOne, " checked>") != 1 || !strings.Contains(addOne, `value="`+loose+`" checked>`) {
-		t.Errorf("?secret= 预勾不正确")
+	if got := checkedSecrets.FindAllString(addOne, -1); len(got) != 1 || !strings.Contains(got[0], loose) {
+		t.Errorf("?secret= 应只预勾该密钥，实际 %v", got)
 	}
 	addAll := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/zz-project/clients/new", nil).Body.String()
-	if strings.Count(addAll, " checked>") != 2 {
-		t.Errorf("不带 ?secret= 时应保持原有默认（全部勾选），实际 %d 个", strings.Count(addAll, " checked>"))
+	if got := checkedSecrets.FindAllString(addAll, -1); len(got) != 0 {
+		t.Errorf("不带 ?secret= 时应默认不勾任何密钥（F），实际 %v", got)
+	}
+	if !strings.Contains(addAll, "仅代发") || strings.Contains(addAll, "<details>") || strings.Contains(addAll, "高级") {
+		t.Error("添加接入方页应把权限做成两段式、不再有「高级」折叠区（F）")
 	}
 
 	// D 的「移到项目…」：移出到未归入项目要二次确认
@@ -818,5 +822,84 @@ func TestProjectTabAndSecretEntryPoints(t *testing.T) {
 	}
 	if containsSentinel(detail, "SWSV-PROJ-SENTINEL") || containsSentinel(add, "SWSV-PROJ-SENTINEL") {
 		t.Fatal("项目页泄漏了密钥值")
+	}
+}
+
+// TestAddClientFormAndPermissions 覆盖 F（设计稿 ⑤）：两段式权限、来源 IP 直显、无 ?secret= 默认不勾、
+// 至少选一个的校验保留、语义与结果页不变。
+func TestAddClientFormAndPermissions(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "ia-add-session", "ia-add-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ia-add','ia-add',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.save(SecretRequest{NS: "ia-add", Label: "ia-add-key", Provider: "github-pat", Type: "token", Value: "SWSV-ADD-SENTINEL", Bindings: Binding{Hosts: []string{"api.github.com"}, NoClientAccess: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-add/clients/new", nil).Body.String()
+	for _, want := range []string{"谁来调用", "能用哪些密钥", "权限", "仅代发", "可取明文", "来源 IP（可选）", `name="cidrs"`, `name="allow_resolve" value="" checked`} {
+		if !strings.Contains(form, want) {
+			t.Errorf("添加接入方页缺少 %q", want)
+		}
+	}
+	for _, bad := range []string{"<details>", "高级"} {
+		if strings.Contains(form, bad) {
+			t.Errorf("添加接入方页仍有 %q（F 要求取消高级折叠区）", bad)
+		}
+	}
+	checkedSecrets := regexp.MustCompile(`name="secret" value="[^"]+" checked>`)
+	if got := checkedSecrets.FindAllString(form, -1); len(got) != 0 {
+		t.Errorf("没有 ?secret= 时应默认不勾任何密钥，实际 %v", got)
+	}
+	if !strings.Contains(form, `name="secret" value="`+m.ID+`"`) {
+		t.Error("能用哪些密钥没有列出本项目密钥")
+	}
+
+	// 至少选一个的校验保留。
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-add/clients/new", url.Values{"csrf": {csrf}, "name": {"no-secret"}}); w.Code != http.StatusBadRequest {
+		t.Errorf("没选密钥应 400，实际 %d", w.Code)
+	}
+
+	// 仅代发（默认）：新接入方没有 resolve scope。
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-add/clients/new", url.Values{"csrf": {csrf}, "name": {"ia-fetch"}, "secret": {m.ID}}); w.Code != http.StatusOK {
+		t.Fatalf("创建接入方失败：%d %s", w.Code, w.Body.String())
+	}
+	var scopes string
+	if err := st.DB.QueryRow(`SELECT scopes FROM clients WHERE ns='ia-add' AND name='ia-fetch'`).Scan(&scopes); err != nil {
+		t.Fatal(err)
+	}
+	if hasScope(scopes, "resolve") {
+		t.Errorf("默认应只给代发：%q", scopes)
+	}
+
+	// 可取明文 + 来源 IP：scope 与规范化后的 CIDR 都写对。
+	res := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-add/clients/new", url.Values{"csrf": {csrf}, "name": {"ia-resolve"}, "secret": {m.ID}, "allow_resolve": {"on"}, "cidrs": {"10.0.0.1"}})
+	if res.Code != http.StatusOK {
+		t.Fatalf("创建可取明文接入方失败：%d", res.Code)
+	}
+	var cidrs string
+	if err := st.DB.QueryRow(`SELECT scopes,cidrs FROM clients WHERE ns='ia-add' AND name='ia-resolve'`).Scan(&scopes, &cidrs); err != nil {
+		t.Fatal(err)
+	}
+	if !hasScope(scopes, "resolve") || cidrs != "10.0.0.1/32" {
+		t.Errorf("可取明文/来源 IP 没有写对：scopes=%q cidrs=%q", scopes, cidrs)
+	}
+	// 结果页（一次性通行证）不变：令牌只出现一次，且带上来源 IP。
+	body := res.Body.String()
+	token := regexp.MustCompile(`swsv_[A-Za-z0-9_-]{43}`).FindString(body)
+	if token == "" || !strings.Contains(body, "SWSV_TOKEN="+token) {
+		t.Error("结果页应显示一次性令牌（SV-04 结果页不变）")
+	}
+	if !strings.Contains(body, "来源 IP：10.0.0.1/32") {
+		t.Error("结果页应显示规范化后的来源 IP")
+	}
+	if containsSentinel(body, "SWSV-ADD-SENTINEL") {
+		t.Fatal("结果页泄漏了密钥值")
 	}
 }

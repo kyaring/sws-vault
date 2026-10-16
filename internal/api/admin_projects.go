@@ -437,7 +437,7 @@ func (s *Server) adminProjectClientNew(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 	if r.Method == http.MethodGet {
-		// ?secret={id}（可重复）来自「给谁用 →」：只预勾这些密钥；不带参数时保持原有默认。
+		// ?secret={id}（可重复）来自「给谁用 →」：只预勾这些密钥；不带参数时默认不勾任何密钥（F）。
 		preselected := map[string]bool{}
 		for _, sid := range r.URL.Query()["secret"] {
 			if namePattern.MatchString(sid) {
@@ -462,12 +462,12 @@ func (s *Server) adminProjectClientNew(w http.ResponseWriter, r *http.Request, n
 				_ = json.Unmarshal([]byte(raw), &bd)
 				v.Provider = providerLabel(v.Provider)
 				v.Hosts = strings.Join(bd.Hosts, ", ")
-				v.Checked = len(preselected) == 0 || preselected[v.ID]
+				v.Checked = preselected[v.ID]
 				list = append(list, v)
 			}
 		}
 		rows.Close()
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>添加接入方</title><h1>添加接入方</h1><p class="lead">给要用这个项目的人或程序发一张通行证。令牌只显示一次。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>名称 <input name="name" pattern="[A-Za-z0-9._-]{1,64}" autocomplete="off" required><small class="hint">同一个项目里不能重名，例如 ci 或 blog-worker。</small></label><label>备注（可选） <input name="note" maxlength="100" autocomplete="off"><small class="hint">最多 100 字，写清楚是谁在用。</small></label><h2>可使用的密钥</h2>{{if .Items}}<div class="group">{{range .Items}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"{{if .Checked}} checked{{end}}><span class="t">{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div><p class="hint">至少选一个。没勾选的密钥，这个接入方用不了。</p>{{else}}<p class="hint">这个项目还没有密钥，先去「新建密钥」或「从未关联移入」。</p>{{end}}<details><summary>高级</summary><label class="check"><input type="checkbox" name="allow_resolve"><span class="t">允许取出明文（命令注入 / git 需要）<small class="hint">给 AI 用请不要勾选。</small></span></label><label>限制来源 IP（可选） <input name="cidrs" autocomplete="off" placeholder="10.0.0.0/8, 192.168.1.5"><small class="hint">留空表示不限来源；单个 IP 会自动补成 /32 或 /128。</small></label></details><div class="bar"><button class="btn block">生成通行证</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Name": name, "Items": list})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>添加接入方</title><h1>添加接入方</h1><p class="lead">给要用这个项目的人或程序发一张通行证。令牌只显示一次。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><h2>谁来调用</h2><label>名称 <input name="name" pattern="[A-Za-z0-9._-]{1,64}" autocomplete="off" required><small class="hint">同一个项目里不能重名，例如 ci 或 blog-worker。</small></label><label>备注（可选） <input name="note" maxlength="100" autocomplete="off"><small class="hint">最多 100 字，写清楚是谁在用。</small></label><h2>能用哪些密钥</h2>{{if .Items}}<div class="group">{{range .Items}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"{{if .Checked}} checked{{end}}><span class="t">{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div><p class="hint">至少选一个。没勾选的密钥，这个接入方用不了。</p>{{else}}<p class="hint">这个项目还没有密钥，先去「放入密钥」。</p>{{end}}<h2>权限</h2><fieldset class="choices"><legend>权限</legend><label class="choice"><input type="radio" name="allow_resolve" value="" checked><span><b>仅代发</b><small>推荐</small></span></label><label class="choice"><input type="radio" name="allow_resolve" value="on"><span><b>可取明文</b></span></label></fieldset><p class="hint">仅代发：接入方拿不到密钥值，只能让 Vault 帮它发请求；可取明文只给受信任的程序用。</p><h2>来源 IP（可选）</h2><label>限制来源 <input name="cidrs" autocomplete="off" placeholder="留空即不限，例如 10.0.0.0/8, 192.168.1.5"><small class="hint">留空表示不限来源；单个 IP 会自动补成 /32 或 /128。</small></label><div class="bar"><button class="btn block">生成通行证</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Name": name, "Items": list})
 		return
 	}
 	if r.Method != http.MethodPost {
