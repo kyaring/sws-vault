@@ -18,7 +18,7 @@ func TestPanelNeverDisplaysSecretAndRequiresCSRF(t *testing.T) {
 	sessions.Lock()
 	sessions.m["fake-session"] = adminSession{csrf: "fake-csrf", created: time.Now(), last: time.Now()}
 	sessions.Unlock()
-	r := httptest.NewRequest("GET", "/admin/", nil)
+	r := httptest.NewRequest("GET", "/admin/secrets", nil)
 	r.AddCookie(&http.Cookie{Name: "sws_admin", Value: "fake-session"})
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
@@ -28,7 +28,7 @@ func TestPanelNeverDisplaysSecretAndRequiresCSRF(t *testing.T) {
 	if w.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("security headers missing")
 	}
-	for _, path := range []string{"/admin/secrets/new", "/admin/projects", "/admin/projects/new", "/admin/clients", "/admin/audit", "/admin/intents/new", "/admin/secrets/" + m.ID + "/bindings", "/admin/secrets/" + m.ID + "/rotate", "/admin/assets/admin.css"} {
+	for _, path := range []string{"/admin/secrets/new", "/admin/projects", "/admin/projects/new", "/admin/audit", "/admin/intents/new", "/admin/secrets/" + m.ID + "/bindings", "/admin/secrets/" + m.ID + "/rotate", "/admin/assets/admin.css"} {
 		rr := httptest.NewRequest("GET", path, nil)
 		rr.AddCookie(&http.Cookie{Name: "sws_admin", Value: "fake-session"})
 		ww := httptest.NewRecorder()

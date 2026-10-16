@@ -59,11 +59,11 @@ func panelPageKind(src string) (string, string) {
 	switch title := panelPageTitle(src); {
 	case title == "所有密钥" || title == "密钥" || strings.HasPrefix(title, "密钥详情"):
 		return panelKindTab, "secrets"
-	case title == "项目" || strings.HasPrefix(title, "项目详情") || title == "客户端":
+	case title == "项目" || strings.HasPrefix(title, "项目详情"):
 		return panelKindTab, "projects"
 	case title == "审计事件":
 		return panelKindTab, "audit"
-	case title == "保险库" || title == "高级功能" || title == "设置":
+	case title == "设置":
 		return panelKindTab, ""
 	case title == "新建密钥" || title == "新建项目" || title == "添加接入方" || title == "从未关联移入" ||
 		title == "创建一次性录入链接" || strings.HasPrefix(title, "修改使用范围") ||
@@ -116,10 +116,6 @@ func panelShell(src string) (string, string) {
 	case panelKindTab:
 		header := `<header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span>`
 		switch {
-		case panelPageTitle(src) == "保险库":
-			// 首页暂时保留顶栏的退出表单（cmd/swsvault 的冒烟测试从这里取 csrf 值），
-			// 首页整页删除在阶段 2，届时随 A3 一起处理。
-			header = `<header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form>`
 		case strings.HasPrefix(panelPageTitle(src), "密钥详情"):
 			// 详情页左上角固定指向上级页面（A5）。
 			header = `<header class="appbar"><a class="back" href="/admin/secrets">‹ 密钥</a><span class="spacer"></span>`

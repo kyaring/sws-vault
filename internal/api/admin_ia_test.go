@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -355,5 +356,49 @@ func TestSecretsTabGroupsAndKeyDetail(t *testing.T) {
 	}
 	if w := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/ia-no-such-key", nil); w.Code != http.StatusNotFound {
 		t.Errorf("不存在的密钥详情应 404，实际 %d", w.Code)
+	}
+}
+
+// TestAdminLegacyRedirects 覆盖卡里测试 1 的 303 映射（A3/A4）：
+// 登录后与 /admin/ 落到密钥标签；旧「高级 / 所有密钥 / 接入项目」地址各自落到新页；
+// 未登录访问 /admin/ 仍先跳登录页。
+func TestAdminLegacyRedirects(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "ia-redirect-session", "ia-redirect-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	for _, tc := range []struct{ path, location string }{
+		{"/admin/", "/admin/secrets"},
+
+		{"/admin/advanced", "/admin/secrets"},
+		{"/admin/advanced/secrets", "/admin/secrets"},
+		{"/admin/advanced/secrets?ns=ns1&provider=generic", "/admin/secrets"},
+		{"/admin/namespaces", "/admin/projects"},
+		{"/admin/clients", "/admin/projects"},
+		{"/admin/quick/project", "/admin/secrets/new"},
+		{"/admin/quick/project?project=ui-test&client=default", "/admin/secrets/new"},
+	} {
+		w := adminPageRequest(s, cookie, http.MethodGet, tc.path, nil)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != tc.location {
+			t.Errorf("%s 应 303 到 %s，实际 %d %q", tc.path, tc.location, w.Code, w.Header().Get("Location"))
+		}
+	}
+	// /admin（无斜杠）由 ServeMux 先 301 到 /admin/，再走上面的 303。
+	if w := adminPageRequest(s, cookie, http.MethodGet, "/admin", nil); w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/admin/" {
+		t.Errorf("/admin 应先 301 到 /admin/，实际 %d %q", w.Code, w.Header().Get("Location"))
+	}
+	if anon := adminPageRequest(s, "ia-no-such-session", http.MethodGet, "/admin/", nil); anon.Code != http.StatusSeeOther || anon.Header().Get("Location") != "/admin/login" {
+		t.Errorf("未登录访问 /admin/ 应先跳登录页，实际 %d %q", anon.Code, anon.Header().Get("Location"))
+	}
+	password, totp, loginCSRF, csrfCookie := prepareAdminLogin(t, s, st)
+	form := url.Values{"csrf": {loginCSRF}, "password": {password}, "totp": {totp}}
+	r := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(csrfCookie)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/secrets" {
+		t.Errorf("登录后应 303 到 /admin/secrets，实际 %d %q", w.Code, w.Header().Get("Location"))
 	}
 }

@@ -22,59 +22,6 @@ const unassignedNS = "_unassigned"
 
 var projectNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
-func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
-		return
-	}
-	type project struct {
-		Name             string
-		Secrets, Clients int
-	}
-	rows, err := s.S.DB.Query(`SELECT n.name,(SELECT count(*) FROM secrets x WHERE x.ns=n.name AND x.status='active'),(SELECT count(*) FROM clients c WHERE c.ns=n.name AND c.disabled=0) FROM namespaces n WHERE n.name<>? AND substr(n.name,1,1)<>'_' ORDER BY n.name`, unassignedNS)
-	if err != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	defer rows.Close()
-	var projects []project
-	for rows.Next() {
-		var item project
-		if rows.Scan(&item.Name, &item.Secrets, &item.Clients) == nil {
-			projects = append(projects, item)
-		}
-	}
-	var secretCount, projectCount, unassigned int
-	var lastUsed string
-	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE status='active'`).Scan(&secretCount); err != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name<>? AND substr(name,1,1)<>'_'`, unassignedNS).Scan(&projectCount); err != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE ns=? AND status='active'`, unassignedNS).Scan(&unassigned); err != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := s.S.DB.QueryRow(`SELECT COALESCE(max(last_used_at), '') FROM secrets WHERE last_used_at<>''`).Scan(&lastUsed); err != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if lastUsed != "" {
-		lastUsed = relativeUseTime(lastUsed)
-	}
-	data := map[string]any{"CSRF": sess.csrf, "Projects": projects, "Unassigned": unassigned, "SecretCount": secretCount, "ProjectCount": projectCount, "LastUsed": lastUsed}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>保险库</title>
-<h1>保险库</h1><p class="lead">{{.SecretCount}} 个有效密钥 · {{.ProjectCount}} 个项目{{if .LastUsed}} · 最近一次调用 {{.LastUsed}}{{end}}</p>
-<div class="actions"><a class="action primary" href="/admin/secrets/new"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span><b>新建</b>存一个密钥</span></a><a class="action" href="/admin/quick/project"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span><b>接入项目</b>生成令牌和配置</span></a></div>
-{{if gt .Unassigned 0}}<h2>需要处理</h2><div class="group"><a class="row" href="/admin/advanced/secrets?ns=_unassigned"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">未关联密钥<small>还没给任何项目，暂不可调用</small></span><span class="badge">{{.Unassigned}}</span></a></div>{{end}}
-<h2>项目</h2>{{if .Projects}}<div class="group">{{range .Projects}}<a class="row" href="/admin/projects/{{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{.Secrets}} 个密钥 · {{.Clients}} 个客户端</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择「接入项目」开始。</p>{{end}}
-<h2>更多</h2><div class="group"><a class="row" href="/admin/projects"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">项目<small>建项目、放密钥、发通行证</small></span></a><a class="row" href="/admin/advanced/secrets"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">所有密钥</span></a><a class="row" href="/admin/audit"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/advanced"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 13.5l2-1.5-2-1.5-.7-2.2-2.5-.2L14.5 6 12 5l-2.5 1-.8 2.1-2.5.2-.7 2.2-2 1.5 2 1.5.7 2.2 2.5.2.8 2.1 2.5 1 2.5-1 .8-2.1 2.5-.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></span><span class="t">高级功能</span></a></div>
-</html>`, data)
-}
-
 func relativeUseTime(value string) string {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
@@ -93,14 +40,6 @@ func relativeUseTime(value string) string {
 		return fmt.Sprintf("%d 小时前", int(elapsed.Hours()))
 	}
 	return fmt.Sprintf("%d 天前", int(elapsed.Hours()/24))
-}
-
-func (s *Server) adminAdvanced(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
-		return
-	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>高级功能</title><h1>高级</h1><div class="group"><a class="row" href="/admin/advanced/secrets"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v5c0 5 3 8 8 10 5-2 8-5 8-10V6z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">密钥列表</span></a><a class="row" href="/admin/namespaces"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">项目管理</span></a><a class="row" href="/admin/clients"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">客户端</span></a><a class="row" href="/admin/audit"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">审计事件</span></a><a class="row" href="/admin/intents/new"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">一次性录入链接</span></a></div><a class="back" href="/admin/">返回首页</a></html>`, map[string]string{"CSRF": sess.csrf})
 }
 
 func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {

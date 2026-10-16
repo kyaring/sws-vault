@@ -52,8 +52,7 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -117,27 +116,11 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", ns, "client-create", "", "", "ok", s.sourceIP(r))
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端已创建</h1><p>令牌只显示这一次。请立即保存到受保护的环境注入中。</p><pre>{{.Token}}</pre><a href="/admin/clients">返回</a></html>`, map[string]string{"Token": token})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>接入方已创建</h1><p>令牌只显示这一次。请立即保存到受保护的环境注入中。</p><pre>{{.Token}}</pre><a href="/admin/projects">返回项目</a></html>`, map[string]string{"Token": token})
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT id,ns,name,scopes,cidrs,expires_at,disabled FROM clients ORDER BY created_at DESC LIMIT 200`)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	defer rows.Close()
-	type item struct {
-		ID, NS, Name, Scopes, CIDRs, Expires string
-		Disabled                             int
-	}
-	var list []item
-	for rows.Next() {
-		var v item
-		if rows.Scan(&v.ID, &v.NS, &v.Name, &v.Scopes, &v.CIDRs, &v.Expires, &v.Disabled) == nil {
-			list = append(list, v)
-		}
-	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><button class="btn block">创建客户端</button></form><table><tr><th>ID</th><th>项目</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	// A4：旧的「客户端」列表页删除，浏览时直接去项目标签；创建（POST）保留原处理。
+	http.Redirect(w, r, "/admin/projects", http.StatusSeeOther)
 }
 func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
