@@ -69,7 +69,7 @@ func panelPageKind(src string) (string, string) {
 		return panelKindTab, "audit"
 	case title == "设置":
 		return panelKindTab, ""
-	case title == "新建密钥" || title == "新建项目" || title == "添加接入方" || title == "从未关联移入" ||
+	case title == "新建密钥" || title == "新建项目" || title == "添加接入方" ||
 		title == "创建一次性录入链接" || title == "从未归入项目里选" || title == "放入密钥" || title == "编辑项目" || title == "生成录入链接" || strings.HasPrefix(title, "修改使用范围") ||
 		strings.HasPrefix(title, "轮换凭据") || title == "修改初始密码" || title == "设置双重验证" ||
 		title == "放进项目" || title == "移出项目":

@@ -191,6 +191,53 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	_ = ns
 	_ = providerName
 }
+
+// auditActionLabel / auditResultLabel 把审计里的英文动作与结果翻成面板上显示的中文（I4）。
+func auditActionLabel(action string) string {
+	if v, ok := auditActionLabels[action]; ok {
+		return v
+	}
+	return action
+}
+
+func auditResultLabel(result string) string {
+	if v, ok := auditResultLabels[result]; ok {
+		return v
+	}
+	return result
+}
+
+var auditActionLabels = map[string]string{
+	"fetch":               "代发",
+	"resolve":             "取明文",
+	"list":                "列表",
+	"write":               "新建密钥",
+	"rotate":              "轮换",
+	"login":               "登录",
+	"logout":              "退出",
+	"client-create":       "新建接入方",
+	"client-disable":      "停用接入方",
+	"client-update":       "修改接入方",
+	"client-regenerate":   "重新生成通行证",
+	"project-create":      "新建项目",
+	"project-description": "改项目简介",
+	"secret-associate":    "放入项目",
+	"secret-disable":      "停用密钥",
+	"binding-update":      "改使用范围",
+	"intent-create":       "生成录入链接",
+	"admin.grant.update":  "改授权",
+	"totp-enrolled":       "两步验证",
+	"password-changed":    "改密码",
+}
+
+var auditResultLabels = map[string]string{
+	"ok":       "成功",
+	"failed":   "失败",
+	"rejected": "被拒绝",
+	"locked":   "已锁定",
+	"denied":   "被拒绝",
+}
+
 func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
@@ -198,11 +245,11 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	ns, actor, from, to := r.URL.Query().Get("ns"), r.URL.Query().Get("actor"), r.URL.Query().Get("from"), r.URL.Query().Get("to")
 	displayNS := ns
-	if ns == "未关联" {
-		ns = "_unassigned"
+	if ns == "未归入项目" {
+		ns = unassignedNS
 	}
-	if ns == "_unassigned" {
-		displayNS = "未关联"
+	if ns == unassignedNS {
+		displayNS = "未归入项目"
 	}
 	where := []string{"1=1"}
 	args := []any{}
@@ -254,9 +301,11 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v item
 		if rows.Scan(&v.At, &v.Actor, &v.NS, &v.ID, &v.Action, &v.Host, &v.Result, &v.IP) == nil {
-			if v.NS == "_unassigned" {
-				v.NS = "未关联"
+			if v.NS == unassignedNS {
+				v.NS = "未归入项目"
 			}
+			v.Action = auditActionLabel(v.Action)
+			v.Result = auditResultLabel(v.Result)
 			list = append(list, v)
 		}
 	}
@@ -284,7 +333,7 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	if page*50 < total {
 		next = mk(page + 1)
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>项目<input name="ns" value="{{.NS}}"></label><label>操作者<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>Actor</th><th>项目</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": displayNS, "Actor": actor, "From": from, "To": to})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>项目<input name="ns" value="{{.NS}}"></label><label>操作者<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>操作者</th><th>项目</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": displayNS, "Actor": actor, "From": from, "To": to})
 }
 func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)

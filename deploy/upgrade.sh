@@ -15,7 +15,17 @@ if (( ! APPLY )); then printf 'DRY-RUN: backup database, preserve current binary
 install -m 0755 "$src" "$bin"
 if [[ -z "$ROOT" ]]; then
   systemctl restart sws-vault
-  curl --fail --silent --show-error http://192.168.20.132:9531/healthz
+  healthz=http://192.168.20.132:9531/healthz
+  ready=0
+  for _ in $(seq 1 15); do
+    if curl --fail --silent --show-error --output /dev/null "$healthz"; then ready=1; break; fi
+    sleep 1
+  done
+  if (( ! ready )); then
+    echo "healthz 在 15 秒内没有就绪：$healthz" >&2
+    exit 1
+  fi
+  curl --fail --silent --show-error "$healthz"
   printf '\nInstalled binary version: '; "$bin" version
   systemctl --no-pager --full status sws-vault | sed -n '1,12p'
   journalctl -u sws-vault -n 20 --no-pager

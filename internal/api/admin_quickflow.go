@@ -22,6 +22,14 @@ const unassignedNS = "_unassigned"
 
 var projectNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// defaultPortForScheme 给出协议的默认端口，用来判断自建地址里显式写的端口是不是非默认端口。
+func defaultPortForScheme(scheme string) string {
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 func relativeUseTime(value string) string {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
@@ -114,7 +122,11 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 			adminErrOut(w, 400, "Gitea 地址中的主机名无效，请填写例如 https://git.example.com")
 			return
 		}
+		// 非默认端口必须保留，否则出站会打到 443/80（SV-07 遗留 I2）。
 		host := strings.ToLower(parsed.Hostname())
+		if port := parsed.Port(); port != "" && port != defaultPortForScheme(parsed.Scheme) {
+			host = strings.ToLower(parsed.Host)
+		}
 		hosts = []string{host}
 	case "generic":
 		for _, h := range strings.Split(r.Form.Get("hosts"), ",") {
@@ -175,53 +187,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
-		return
-	}
-	if r.Method == http.MethodGet {
-		project := strings.TrimSpace(r.URL.Query().Get("project"))
-		client := strings.TrimSpace(r.URL.Query().Get("client"))
-		if client == "" {
-			client = "default"
-		}
-		if project == "" {
-			render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目</h1><p class="lead">第 1 步，共 2 步</p><p>先填写项目名，再选择要提供给项目的密钥。</p><form method="get" action="/admin/quick/project"><label>项目名（小写字母、数字、连字符） <input name="project" pattern="[a-z0-9][a-z0-9-]{0,63}" required></label><label>客户端名称 <input name="client" value="default" pattern="[A-Za-z0-9._-]{1,64}" required></label><button>下一步：选择密钥</button></form><a href="/admin/">取消</a>`, nil)
-			return
-		}
-		if !projectNamePattern.MatchString(project) || !namePattern.MatchString(client) {
-			adminErrOut(w, 400, "invalid project or client name")
-			return
-		}
-		rows, e := s.S.DB.Query(`SELECT id,label,ns,provider,bindings FROM secrets WHERE status='active' AND (ns=? OR ns=?) ORDER BY label`, unassignedNS, project)
-		if e != nil {
-			adminErrOut(w, 500, "internal error")
-			return
-		}
-		defer rows.Close()
-		type item struct{ ID, Label, Project, Provider, Hosts string }
-		var items []item
-		providerNames := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "其他"}
-		for rows.Next() {
-			var x item
-			var rawBindings string
-			if rows.Scan(&x.ID, &x.Label, &x.Project, &x.Provider, &rawBindings) == nil {
-				var binding Binding
-				_ = json.Unmarshal([]byte(rawBindings), &binding)
-				x.Provider = providerNames[x.Provider]
-				x.Hosts = strings.Join(binding.Hosts, ", ")
-				items = append(items, x)
-			}
-		}
-		var unassignedItems, projectItems []item
-		for _, item := range items {
-			if item.Project == unassignedNS {
-				unassignedItems = append(unassignedItems, item)
-			} else {
-				projectItems = append(projectItems, item)
-			}
-		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/admin/assets/admin.css"><title>接入项目</title><h1>接入项目：{{.Project}}</h1><p class="lead">第 2 步，共 2 步</p><p>选择未关联密钥或已经属于此项目的密钥。提交后会创建一个新的客户端令牌。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="client" value="{{.Client}}">{{if .UnassignedItems}}<h2>未关联</h2><div class="group">{{range .UnassignedItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if .ProjectItems}}<h2>已在此项目</h2><div class="group">{{range .ProjectItems}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span>{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div>{{end}}{{if not .Items}}<p>暂无可选密钥。</p>{{end}}<details class="advanced"><summary>高级</summary><label class="check"><input type="checkbox" name="allow_resolve"><span>允许取出明文（命令注入 / git 需要）<small>给 AI 用请不要勾选。</small></span></label><label>限制来源 IP（可选）<input name="cidrs" autocomplete="off" placeholder="10.0.0.0/8, 192.168.1.5"><small class="hint">只有来自这些地址的调用会被接受；单个 IP 会自动补成 /32（IPv4）或 /128（IPv6）。</small></label></details><div class="bar"><button class="btn block selected-submit">生成项目配置</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Items": items, "UnassignedItems": unassignedItems, "ProjectItems": projectItems, "Project": project, "Client": client})
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
 	if r.Method != http.MethodPost {

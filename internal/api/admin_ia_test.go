@@ -2,10 +2,13 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -901,5 +904,317 @@ func TestAddClientFormAndPermissions(t *testing.T) {
 	}
 	if containsSentinel(body, "SWSV-ADD-SENTINEL") {
 		t.Fatal("结果页泄漏了密钥值")
+	}
+}
+
+// panelForbiddenWords 是卡里术语表：面板可见文本里不得出现这些词。
+var panelForbiddenWords = []string{"命名空间", "客户端", "client", "高级", "意图", "intent", "接入项目", "未关联", "绑定"}
+
+func panelVisibleText(html string) string {
+	return regexp.MustCompile(`(?is)<[^>]*>`).ReplaceAllString(html, " ")
+}
+
+// TestPanelTerminologySweep 覆盖卡里测试 2：遍历全部管理 GET 页（含详情、设置、结果、录入链接页），
+// 可见文本不含禁用词表里任何一个（只查可见文本，不查 URL 和 name 属性）。
+func TestPanelTerminologySweep(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at,description) VALUES('ia-w','ia-word',?,'简介')`, now); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.save(SecretRequest{NS: "ia-word", Label: "ia-word-key", Provider: "github-pat", Type: "token", Value: "SWSV-WORD-SENTINEL", Bindings: Binding{Hosts: []string{"api.github.com"}, AllowedClients: []string{"c1"}}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('ia-wc','ia-word','word-helper',?, 'secrets:list,fetch', ?)`, []byte("ia-wc"), now); err != nil {
+		t.Fatal(err)
+	}
+	intentToken := "ia-word-intent-token"
+	sum := sha256.Sum256([]byte(intentToken))
+	if _, err := st.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, sum[:], "ia-word", "ia-word", time.Now().Add(time.Hour).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := "ia-word-session", "ia-word-csrf"
+	setSession := func(mustChange, enrollOnly bool) {
+		sessions.Lock()
+		sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now(), mustChange: mustChange, enrollOnly: enrollOnly}
+		sessions.Unlock()
+	}
+	pages := []string{
+		"/admin/login", "/admin/settings", "/admin/audit", "/admin/intents/new",
+		"/admin/secrets", "/admin/secrets/new", "/admin/secrets/" + m.ID, "/admin/secrets/" + m.ID + "/bindings",
+		"/admin/secrets/" + m.ID + "/rotate", "/admin/secrets/" + m.ID + "/project",
+		"/admin/projects", "/admin/projects/new", "/admin/projects/ia-word", "/admin/projects/ia-word/edit",
+		"/admin/projects/ia-word/secrets/add", "/admin/projects/ia-word/secrets/import",
+		"/admin/projects/ia-word/intents/new", "/admin/projects/ia-word/clients/new",
+		"/admin/projects/ia-word/clients/ia-wc", "/i/" + intentToken,
+	}
+	for _, path := range pages {
+		setSession(false, false)
+		w := adminPageRequest(s, cookie, http.MethodGet, path, nil)
+		if path == "/admin/login" {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			w = httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, w.Code)
+		}
+		visible := panelVisibleText(w.Body.String())
+		for _, bad := range panelForbiddenWords {
+			if strings.Contains(visible, bad) {
+				t.Errorf("%s 的可见文本出现禁用词 %q", path, bad)
+			}
+		}
+	}
+	// 受限会话的两个页面也要过一遍（先补一条 admins 行，否则 enroll 页取不到状态会 500）。
+	if _, err := st.DB.Exec(`INSERT INTO admins(id,password_hash,password_salt,totp_secret,created_at,totp_enrolled,must_change_password) VALUES(1,X'00',X'00',X'00',?,0,1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path                   string
+		mustChange, enrollOnly bool
+	}{{"/admin/password", true, true}, {"/admin/totp/enroll", false, true}} {
+		// adminSession 每次都会按库里的 must_change_password 重新判定，两个页面的前置条件不同。
+		flag := 0
+		if tc.mustChange {
+			flag = 1
+		}
+		if _, err := st.DB.Exec(`UPDATE admins SET must_change_password=? WHERE id=1`, flag); err != nil {
+			t.Fatal(err)
+		}
+		setSession(tc.mustChange, tc.enrollOnly)
+		w := adminPageRequest(s, cookie, http.MethodGet, tc.path, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", tc.path, w.Code)
+		}
+		visible := panelVisibleText(w.Body.String())
+		for _, bad := range panelForbiddenWords {
+			if strings.Contains(visible, bad) {
+				t.Errorf("%s 的可见文本出现禁用词 %q", tc.path, bad)
+			}
+		}
+	}
+}
+
+// TestTabBarAndFormPageTraversal 覆盖卡里测试 1 的后半段：标签页都有标签栏且当前项唯一，
+// 新建 / 添加 / 编辑类页面不显示标签栏且顶栏是「取消」+ 标题。
+func TestTabBarAndFormPageTraversal(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	now := time.Now().UTC().Format(time.RFC3339)
+	m, err := s.save(SecretRequest{NS: "ia-tab", Label: "ia-tab-key", Provider: "generic", Type: "token", Value: "SWSV-TAB-SENTINEL", Bindings: Binding{Hosts: []string{"example.com"}, NoClientAccess: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('ia-tc','ia-tab','tab-client',?, 'secrets:list,fetch', ?)`, []byte("ia-tc"), now); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := "ia-tab-session", "ia-tab-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	currentRE := regexp.MustCompile(`aria-current="page"`)
+	for _, path := range []string{"/admin/secrets", "/admin/projects", "/admin/audit", "/admin/settings", "/admin/secrets/" + m.ID, "/admin/projects/ia-tab", "/admin/projects/ia-tab/clients/ia-tc"} {
+		body := adminPageRequest(s, cookie, http.MethodGet, path, nil).Body.String()
+		if !strings.Contains(body, `class="tabbar"`) {
+			t.Errorf("%s 是标签页，必须有标签栏", path)
+		}
+		if n := len(currentRE.FindAllString(body, -1)); n > 1 {
+			t.Errorf("%s 的当前标签不唯一（%d 个）", path, n)
+		}
+	}
+	for _, path := range []string{
+		"/admin/secrets/new", "/admin/projects/new", "/admin/projects/ia-tab/clients/new",
+		"/admin/projects/ia-tab/edit", "/admin/projects/ia-tab/secrets/add",
+		"/admin/projects/ia-tab/secrets/import", "/admin/projects/ia-tab/intents/new",
+		"/admin/secrets/" + m.ID + "/rotate", "/admin/secrets/" + m.ID + "/bindings", "/admin/secrets/" + m.ID + "/project",
+	} {
+		body := adminPageRequest(s, cookie, http.MethodGet, path, nil).Body.String()
+		if strings.Contains(body, `class="tabbar"`) {
+			t.Errorf("%s 是表单页，不该有标签栏", path)
+		}
+		if !strings.Contains(body, `>取消</a>`) || !strings.Contains(body, `class="page-title"`) {
+			t.Errorf("%s 顶栏应是「取消」+ 标题", path)
+		}
+	}
+}
+
+// TestExplicitEmptyDeniesEveryClient 覆盖卡里测试 5 的显式空语义：关掉全部授权后，
+// 连另一个未授权的接入方也拿不到（不是「空 = 项目内所有人都能用」）。
+func TestExplicitEmptyDeniesEveryClient(t *testing.T) {
+	s, st, tokenA, _ := testServer(t, "secrets:list,fetch")
+	cookie, csrf := "ia-empty-session", "ia-empty-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	tokenB := "swsv_second-client-token"
+	sum := sha256.Sum256([]byte(tokenB))
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('ia-cb','ns1','second',?, 'secrets:list,fetch', ?)`, sum[:], time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.save(SecretRequest{NS: "ns1", Label: "ia-empty-key", Provider: "generic", Type: "token", Value: "SWSV-EMPTY-SENTINEL", Bindings: Binding{Hosts: []string{"example.com"}, NoClientAccess: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch := func(token string) int {
+		t.Helper()
+		code, _ := request(t, s, token, http.MethodPost, "/v1/fetch", `{"secret":"vault:ns1/`+m.ID+`","method":"GET","url":"https://example.com/"}`)
+		return code
+	}
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+m.ID+"/clients", url.Values{"csrf": {csrf}, "client": {"c1"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("授权失败：%d", w.Code)
+	}
+	// 关掉最后一个授权 → 显式空。
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+m.ID+"/clients", url.Values{"csrf": {csrf}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("清空授权失败：%d", w.Code)
+	}
+	var raw string
+	if err := st.DB.QueryRow(`SELECT bindings FROM secrets WHERE id=?`, m.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var bd Binding
+	if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+		t.Fatal(err)
+	}
+	if len(bd.AllowedClients) != 0 || !bd.NoClientAccess {
+		t.Fatalf("关掉最后一个授权必须写成显式空：%+v", bd)
+	}
+	if code := fetch(tokenA); code != http.StatusForbidden {
+		t.Errorf("被撤权的接入方应 403，实际 %d", code)
+	}
+	if code := fetch(tokenB); code != http.StatusForbidden {
+		t.Errorf("另一个未授权的接入方也应 403（显式空不是「所有人都能用」），实际 %d", code)
+	}
+}
+
+// failingRows 给 authorizeProjectSecrets 注入结果集读取失败（I1）。
+type failingRows struct {
+	scanErr, errErr error
+	// id/bindings 是给出一行「有效数据」用的：这样「吞掉 rows.Err」不会因为下游解析失败
+	// 而仍然报 500，测试才能真正抓到被吞掉的错误。
+	id, bindings string
+	calls        int
+}
+
+func (f *failingRows) Next() bool { f.calls++; return f.calls == 1 }
+func (f *failingRows) Scan(dest ...any) error {
+	if f.scanErr != nil {
+		return f.scanErr
+	}
+	for i, d := range dest {
+		s, ok := d.(*string)
+		if !ok {
+			continue
+		}
+		if i == 0 {
+			*s = f.id
+		} else {
+			*s = f.bindings
+		}
+	}
+	return nil
+}
+func (f *failingRows) Err() error   { return f.errErr }
+func (f *failingRows) Close() error { return nil }
+
+// TestLegacyFixesRollbackGiteaPortAndUpgradePolling 覆盖卡里测试 9：
+// I1 结果集读取失败要冒泡且事务回滚、I2 Gitea 带端口的使用范围保留端口、I3 upgrade.sh 的 healthz 轮询。
+func TestLegacyFixesRollbackGiteaPortAndUpgradePolling(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ia-fix','ia-fix',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.save(SecretRequest{NS: "ia-fix", Label: "ia-fix-key", Provider: "generic", Type: "token", Value: "SWSV-FIX-SENTINEL", Bindings: Binding{Hosts: []string{"example.com"}, NoClientAccess: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := "ia-fix-session", "ia-fix-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	readBinding := func(id string) Binding {
+		t.Helper()
+		var raw string
+		if err := st.DB.QueryRow(`SELECT bindings FROM secrets WHERE id=?`, id).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var bd Binding
+		if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+			t.Fatal(err)
+		}
+		return bd
+	}
+
+	// I1：rows.Scan / rows.Err 出错必须返回错误，并让事务回滚。
+	for _, tc := range []struct {
+		name string
+		rows *failingRows
+		only string
+	}{
+		{"scan", &failingRows{scanErr: errors.New("injected scan failure")}, ""},
+		{"err", &failingRows{errErr: errors.New("injected rows.Err failure"), id: "ia-stub-client", bindings: `{"hosts":["example.com"],"no_client_access":true}`}, ""},
+		// 只让第二个结果集（密钥列表）失败：两条 rows.Scan / rows.Err 路径都要能被这条测试抓住。
+		{"clients-err", &failingRows{errErr: errors.New("injected rows.Err failure"), id: "ia-stub-client"}, "FROM clients"},
+		{"secrets-scan", &failingRows{scanErr: errors.New("injected scan failure")}, "id,bindings"},
+		{"secrets-err", &failingRows{errErr: errors.New("injected rows.Err failure"), id: "ia-fix-key", bindings: `{"hosts":["example.com"],"no_client_access":true}`}, "id,bindings"},
+	} {
+		orig := authorizeRowsQuery
+		authorizeRowsQuery = func(tx *sql.Tx, query string, args ...any) (rowScanner, error) {
+			if tc.only == "" || strings.Contains(query, tc.only) {
+				return tc.rows, nil
+			}
+			return orig(tx, query, args...)
+		}
+		w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-fix/clients/new", url.Values{"csrf": {csrf}, "name": {"ia-fix-" + tc.name}, "secret": {m.ID}})
+		authorizeRowsQuery = orig
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("%s：结果集读取失败应返回 500，实际 %d", tc.name, w.Code)
+		}
+		var n int
+		if err := st.DB.QueryRow(`SELECT count(*) FROM clients WHERE ns='ia-fix'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("%s：事务没有回滚，接入方被建出来了", tc.name)
+		}
+		if bd := readBinding(m.ID); !bd.NoClientAccess || len(bd.AllowedClients) != 0 {
+			t.Fatalf("%s：授权被改动了：%+v", tc.name, bd)
+		}
+	}
+
+	// I2：Gitea 自建地址带非默认端口时保留端口；默认端口不写进使用范围。
+	create := func(label, address string) Binding {
+		t.Helper()
+		w := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", url.Values{"csrf": {csrf}, "provider": {"gitea-token"}, "label": {label}, "value": {"SWSV-FIX-SENTINEL"}, "gitea_address": {address}})
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s 建密钥失败：%d %s", address, w.Code, w.Body.String())
+		}
+		var id string
+		if err := st.DB.QueryRow(`SELECT id FROM secrets WHERE label=?`, label).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return readBinding(id)
+	}
+	if bd := create("ia-gitea-port", "https://git.example.com:3000"); len(bd.Hosts) != 1 || bd.Hosts[0] != "git.example.com:3000" {
+		t.Fatalf("带端口的 Gitea 地址应保留端口：%v", bd.Hosts)
+	}
+	if bd := create("ia-gitea-plain", "https://git.example.com"); len(bd.Hosts) != 1 || bd.Hosts[0] != "git.example.com" {
+		t.Fatalf("默认端口的 Gitea 地址不该写端口：%v", bd.Hosts)
+	}
+
+	// I3：upgrade.sh 重启后最多轮询 15 秒，超时非零退出，其余步骤不变。
+	script, err := os.ReadFile("../../deploy/upgrade.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	for _, want := range []string{"systemctl restart sws-vault", "healthz=http://192.168.20.132:9531/healthz", "for _ in $(seq 1 15); do", "sleep 1", "healthz 在 15 秒内没有就绪", `curl --fail --silent --show-error "$healthz"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("upgrade.sh 缺少 %q", want)
+		}
+	}
+	if !strings.Contains(text, `backup.sh" --apply`) || !strings.Contains(text, `install -m 0755 "$src" "$bin"`) || !strings.Contains(text, "systemctl --no-pager --full status sws-vault") {
+		t.Error("upgrade.sh 的其它步骤被改动了")
 	}
 }

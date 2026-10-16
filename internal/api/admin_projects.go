@@ -568,28 +568,49 @@ func (s *Server) adminProjectClientNew(w http.ResponseWriter, r *http.Request, n
 	})
 }
 
+// rowScanner 是 authorizeProjectSecrets 读结果集所需的最小接口（便于测试注入 Scan / Err 失败）。
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close() error
+}
+
+// authorizeRowsQuery 正常时就是 tx.Query；测试可替换它来注入结果集错误（SV-07 遗留 I1）。
+var authorizeRowsQuery = func(tx *sql.Tx, query string, args ...any) (rowScanner, error) {
+	return tx.Query(query, args...)
+}
+
 // authorizeProjectSecrets 在同一个事务里处理「空授权列表」的语义：
 // 先把「对全项目开放」（allowed_clients 为空且 no_client_access=false）的密钥显式化——
 // 有既有接入方就写成它们，没有就改成 no_client_access=true（否则空列表仍然等于对全项目开放）；
 // 再给本次勾选的密钥追加新接入方，谁都不会被静默撤权。一步式「接入项目」与项目页共用本函数。
 func authorizeProjectSecrets(tx *sql.Tx, project, newClientID string, selected []string, allowResolve bool) error {
 	existing := []string{}
-	rows, err := tx.Query(`SELECT id FROM clients WHERE ns=? AND disabled=0`, project)
+	rows, err := authorizeRowsQuery(tx, `SELECT id FROM clients WHERE ns=? AND disabled=0`, project)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil && id != newClientID {
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		if id != newClientID {
 			existing = append(existing, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	rows.Close()
 	chosen := map[string]bool{}
 	for _, sid := range selected {
 		chosen[sid] = true
 	}
-	srows, err := tx.Query(`SELECT id,bindings FROM secrets WHERE ns=? AND status='active'`, project)
+	srows, err := authorizeRowsQuery(tx, `SELECT id,bindings FROM secrets WHERE ns=? AND status='active'`, project)
 	if err != nil {
 		return err
 	}
@@ -597,9 +618,15 @@ func authorizeProjectSecrets(tx *sql.Tx, project, newClientID string, selected [
 	var list []secretRow
 	for srows.Next() {
 		var r secretRow
-		if srows.Scan(&r.id, &r.bindings) == nil {
-			list = append(list, r)
+		if err := srows.Scan(&r.id, &r.bindings); err != nil {
+			srows.Close()
+			return err
 		}
+		list = append(list, r)
+	}
+	if err := srows.Err(); err != nil {
+		srows.Close()
+		return err
 	}
 	srows.Close()
 	for _, r := range list {
