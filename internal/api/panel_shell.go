@@ -21,6 +21,8 @@ var (
 	panelH1RE    = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
 	// 密钥详情相关的表单页把提交地址写成 /admin/secrets/{id}/…，外壳据此还原上级详情页。
 	panelSecretActionRE = regexp.MustCompile(`action="/admin/secrets/([A-Za-z0-9._-]+)/(?:rotate|bindings|clients|project)"`)
+	// 接入方详情页的表单动作里带着它所属项目，外壳据此还原上级项目页。
+	panelClientActionRE = regexp.MustCompile(`action="/admin/projects/([^/"]+)/clients/`)
 )
 
 type panelTab struct {
@@ -59,7 +61,7 @@ func panelPageKind(src string) (string, string) {
 	switch title := panelPageTitle(src); {
 	case title == "所有密钥" || title == "密钥" || strings.HasPrefix(title, "密钥详情"):
 		return panelKindTab, "secrets"
-	case title == "项目" || strings.HasPrefix(title, "项目详情"):
+	case title == "项目" || strings.HasPrefix(title, "项目详情") || title == "接入方详情":
 		return panelKindTab, "projects"
 	case title == "审计事件":
 		return panelKindTab, "audit"
@@ -120,6 +122,14 @@ func panelShell(src string) (string, string) {
 		case strings.HasPrefix(panelPageTitle(src), "密钥详情"):
 			// 详情页左上角固定指向上级页面（A5）。
 			header = `<header class="appbar"><a class="back" href="/admin/secrets">‹ 密钥</a><span class="spacer"></span>`
+		case panelPageTitle(src) == "接入方详情":
+			// 详情页左上角固定指向上级项目（A5）。
+			href, label := "/admin/projects", "‹ 项目"
+			if m := panelClientActionRE.FindStringSubmatch(src); len(m) == 2 {
+				href = "/admin/projects/" + m[1]
+				label = "‹ " + m[1]
+			}
+			header = `<header class="appbar"><a class="back" href="` + template.HTMLEscapeString(href) + `">` + template.HTMLEscapeString(label) + `</a><span class="spacer"></span>`
 		case panelPageTitle(src) == "项目详情":
 			// 详情页左上角固定指向上级页面（A5）。
 			header = `<header class="appbar"><a class="back" href="/admin/projects">‹ 项目</a><span class="spacer"></span>`

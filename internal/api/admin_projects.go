@@ -159,9 +159,21 @@ func (s *Server) adminProjectRoute(w http.ResponseWriter, r *http.Request) {
 	case "secrets/import":
 		s.adminProjectSecretsImport(w, r, name)
 	default:
-		// H：POST /admin/projects/{name}/clients/{id}/secrets（接入方详情的授权保存地址）
-		if strings.HasPrefix(suffix, "clients/") && strings.HasSuffix(suffix, "/secrets") {
-			s.adminClientSecrets(w, r, name, strings.TrimSuffix(strings.TrimPrefix(suffix, "clients/"), "/secrets"))
+		if rest, ok := strings.CutPrefix(suffix, "clients/"); ok {
+			clientID, sub, hasSub := strings.Cut(rest, "/")
+			switch {
+			case !hasSub:
+				// G：接入方详情
+				s.adminProjectClientDetail(w, r, name, clientID)
+			case sub == "secrets":
+				// H：整体覆盖该接入方的密钥授权
+				s.adminClientSecrets(w, r, name, clientID)
+			case sub == "regenerate":
+				// G：重新生成通行证
+				s.adminProjectClientRegenerate(w, r, name, clientID)
+			default:
+				adminErrOut(w, http.StatusNotFound, "not found")
+			}
 			return
 		}
 		adminErrOut(w, http.StatusNotFound, "not found")

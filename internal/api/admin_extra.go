@@ -363,6 +363,11 @@ func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/clients/"), "/disable")
+	var ns string
+	if e := s.S.DB.QueryRow(`SELECT ns FROM clients WHERE id=?`, id).Scan(&ns); e != nil {
+		adminErrOut(w, 404, "not found")
+		return
+	}
 	res, e := s.S.DB.Exec(`UPDATE clients SET disabled=1 WHERE id=? AND disabled=0`, id)
 	if e != nil {
 		adminErrOut(w, 500, "internal error")
@@ -374,7 +379,7 @@ func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", "", "client-disable", id, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/clients", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/projects/"+ns+"/clients/"+id, http.StatusSeeOther)
 }
 func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)

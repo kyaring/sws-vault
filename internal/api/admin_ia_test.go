@@ -564,3 +564,153 @@ func TestNewSecretFlowAndProjectMove(t *testing.T) {
 		t.Errorf("不存在的密钥应 404，实际 %d", missing.Code)
 	}
 }
+
+// TestClientDetailPermissions 覆盖卡里测试 6（接入方详情 G）：
+// 开关保存准确、跨项目 404、改权限两个方向、不得把未授权密钥的 AllowResolve 改成 true、
+// CIDR 非法 400 且库不变、重新生成后旧令牌失效新令牌可用。
+func TestClientDetailPermissions(t *testing.T) {
+	s, st, token, _ := testServer(t, "secrets:list,fetch")
+	cookie, csrf := "ia-client-session", "ia-client-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	newSecret := func(label string) string {
+		m, err := s.save(SecretRequest{NS: "ns1", Label: label, Provider: "generic", Type: "token", Value: "SWSV-CLIENT-SENTINEL", Bindings: Binding{Hosts: []string{"example.com"}, NoClientAccess: true}}, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.ID
+	}
+	authorized := newSecret("ia-client-authorized")
+	other := newSecret("ia-client-other")
+	readBinding := func(id string) Binding {
+		t.Helper()
+		var raw string
+		if err := st.DB.QueryRow(`SELECT bindings FROM secrets WHERE id=?`, id).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var bd Binding
+		if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+			t.Fatal(err)
+		}
+		return bd
+	}
+	type clientState struct{ scopes, cidrs, note string }
+	readClient := func() clientState {
+		t.Helper()
+		var v clientState
+		if err := st.DB.QueryRow(`SELECT scopes,cidrs,note FROM clients WHERE id='c1'`).Scan(&v.scopes, &v.cidrs, &v.note); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// 只授权 kAuth 给 c1，另一个密钥保持「还没人能用」。
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+authorized+"/clients", url.Values{"csrf": {csrf}, "client": {"c1"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("授权失败：%d", w.Code)
+	}
+
+	page := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ns1/clients/c1", nil).Body.String()
+	for _, want := range []string{"接入方详情", "test", "仅代发", "状态", "能用哪些密钥", `value="` + authorized + `" checked>`, `value="` + other + `">`, `‹ ns1`, `class="tabbar"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("接入方详情缺少 %q", want)
+		}
+	}
+	// 跨项目 URL 一律 404。
+	if w := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/other/clients/c1", nil); w.Code != http.StatusNotFound {
+		t.Errorf("跨项目接入方详情应 404，实际 %d", w.Code)
+	}
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/other/clients/c1", url.Values{"csrf": {csrf}, "note": {"x"}}); w.Code != http.StatusNotFound {
+		t.Errorf("跨项目保存应 404，实际 %d", w.Code)
+	}
+
+	// 改成「可取明文」：对它已授权的密钥打开 AllowResolve，未授权的不动。
+	w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1", url.Values{"csrf": {csrf}, "note": {"Hark 改 DNS 用"}, "cidrs": {"10.0.0.1"}, "permission": {"resolve"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("保存接入方失败：%d %s", w.Code, w.Body.String())
+	}
+	saved := readClient()
+	if !hasScope(saved.scopes, "resolve") || saved.cidrs != "10.0.0.1/32" || saved.note != "Hark 改 DNS 用" {
+		t.Fatalf("权限/来源 IP/备注没有保存正确：%+v", saved)
+	}
+	if bd := readBinding(authorized); !bd.AllowResolve {
+		t.Fatalf("已授权的密钥应打开 AllowResolve：%+v", bd)
+	}
+	if bd := readBinding(other); bd.AllowResolve {
+		t.Fatalf("未授权给它的密钥不得打开 AllowResolve：%+v", bd)
+	}
+
+	// 改回「仅代发」：去掉 resolve scope。
+	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1", url.Values{"csrf": {csrf}, "note": {"Hark 改 DNS 用"}, "cidrs": {"10.0.0.1"}, "permission": {"fetch"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("改回仅代发失败：%d", w.Code)
+	}
+	if saved = readClient(); hasScope(saved.scopes, "resolve") {
+		t.Fatalf("改回仅代发应去掉 resolve scope：%q", saved.scopes)
+	}
+
+	// CIDR 非法 → 400 且库不变。
+	before := readClient()
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1", url.Values{"csrf": {csrf}, "note": {"被改坏了"}, "cidrs": {"not-a-cidr"}, "permission": {"resolve"}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法 CIDR 应 400，实际 %d", w.Code)
+	}
+	if afterState := readClient(); afterState != before {
+		t.Fatalf("非法 CIDR 改动了库：%+v → %+v", before, afterState)
+	}
+
+	// 自定义权限：只读展示，不允许被改。
+	if _, err := st.DB.Exec(`UPDATE clients SET scopes='secrets:list,secrets:write,fetch' WHERE id='c1'`); err != nil {
+		t.Fatal(err)
+	}
+	custom := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ns1/clients/c1", nil).Body.String()
+	if !strings.Contains(custom, "自定义") || strings.Contains(custom, `name="permission"`) {
+		t.Fatal("自定义权限应只读展示，不出选择框")
+	}
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1", url.Values{"csrf": {csrf}, "permission": {"resolve"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("自定义权限保存应成功但不动权限：%d", w.Code)
+	}
+	if saved = readClient(); saved.scopes != "secrets:list,secrets:write,fetch" {
+		t.Fatalf("自定义权限被改动了：%q", saved.scopes)
+	}
+
+	// 能用哪些密钥：开关保存准确。
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1/secrets", url.Values{"csrf": {csrf}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("清空授权失败：%d", w.Code)
+	}
+	after := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ns1/clients/c1", nil).Body.String()
+	if strings.Count(after, " checked>") != 0 {
+		t.Fatalf("清空授权后详情页仍显示勾选：%s", after)
+	}
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1/secrets", url.Values{"csrf": {csrf}, "secret": {authorized}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("重新授权失败：%d", w.Code)
+	}
+	after = adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ns1/clients/c1", nil).Body.String()
+	if strings.Count(after, " checked>") != 1 || !strings.Contains(after, `value="`+authorized+`" checked>`) {
+		t.Fatalf("授权开关保存不准确")
+	}
+
+	// 重新生成通行证：旧令牌立即失效，新令牌可用。
+	regen := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ns1/clients/c1/regenerate", url.Values{"csrf": {csrf}})
+	if regen.Code != http.StatusOK {
+		t.Fatalf("重新生成通行证失败：%d %s", regen.Code, regen.Body.String())
+	}
+	newToken := regexp.MustCompile(`swsv_[A-Za-z0-9_-]{43}`).FindString(regen.Body.String())
+	if newToken == "" || newToken == token {
+		t.Fatalf("重新生成没有给出新令牌：%q", regen.Body.String()[:120])
+	}
+	if code, _ := request(t, s, token, http.MethodGet, "/v1/secrets?ns=ns1", ""); code != http.StatusUnauthorized {
+		t.Errorf("旧令牌应立即失效，实际 %d", code)
+	}
+	if code, out := request(t, s, newToken, http.MethodGet, "/v1/secrets?ns=ns1", ""); code != http.StatusOK {
+		t.Errorf("新令牌应可用，实际 %d %s", code, out)
+	}
+
+	// 停用后回到它的详情页。
+	disabled := adminPageRequest(s, cookie, http.MethodPost, "/admin/clients/c1/disable", url.Values{"csrf": {csrf}})
+	if disabled.Code != http.StatusSeeOther || disabled.Header().Get("Location") != "/admin/projects/ns1/clients/c1" {
+		t.Fatalf("停用后应回接入方详情，实际 %d %q", disabled.Code, disabled.Header().Get("Location"))
+	}
+	var flag int
+	if err := st.DB.QueryRow(`SELECT disabled FROM clients WHERE id='c1'`).Scan(&flag); err != nil || flag != 1 {
+		t.Fatalf("接入方没有停用：%v %d", err, flag)
+	}
+}

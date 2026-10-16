@@ -59,7 +59,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	paths := []string{
 		"/admin/login", "/admin/secrets", "/admin/settings", "/admin/secrets/new",
 		"/admin/projects", "/admin/projects/new", "/admin/audit", "/admin/intents/new",
-		"/admin/secrets/missing/bindings", "/admin/secrets/missing", "/admin/not-a-route", "/i/" + intentToken,
+		"/admin/projects/ns1/clients/c1", "/admin/secrets/missing/bindings", "/admin/secrets/missing", "/admin/not-a-route", "/i/" + intentToken,
 	}
 	for _, path := range paths {
 		setSession(false, false)
