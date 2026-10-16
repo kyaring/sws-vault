@@ -28,7 +28,7 @@ func TestPanelNeverDisplaysSecretAndRequiresCSRF(t *testing.T) {
 	if w.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("security headers missing")
 	}
-	for _, path := range []string{"/admin/secrets/new", "/admin/projects", "/admin/projects/new", "/admin/audit", "/admin/intents/new", "/admin/secrets/" + m.ID + "/bindings", "/admin/secrets/" + m.ID + "/rotate", "/admin/assets/admin.css"} {
+	for _, path := range []string{"/admin/secrets/new", "/admin/projects", "/admin/projects/new", "/admin/projects/ns1/clients/c1", "/admin/audit", "/admin/intents/new", "/admin/secrets/" + m.ID + "/bindings", "/admin/secrets/" + m.ID + "/rotate", "/admin/assets/admin.css"} {
 		rr := httptest.NewRequest("GET", path, nil)
 		rr.AddCookie(&http.Cookie{Name: "sws_admin", Value: "fake-session"})
 		ww := httptest.NewRecorder()

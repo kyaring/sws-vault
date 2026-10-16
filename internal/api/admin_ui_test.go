@@ -47,6 +47,8 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		sessions.Unlock()
 	}
 	setSession(false, false)
+	// 审计表要有数据，才能验证手机端卡片用的 data-label（原断言对象是已删除的客户端表）。
+	s.audit("admin", "ns1", "write", "", "", "ok", "127.0.0.1")
 	// Create an intent solely in the isolated test database so intent.go's GET page is covered.
 	intentToken := "ui-test-intent-token"
 	intentHash := sha256.Sum256([]byte(intentToken))
@@ -91,6 +93,9 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 			if path == "/admin/audit" && (!strings.Contains(body, `<thead>`) || !strings.Contains(body, `<tbody>`)) {
 				t.Errorf("%s table missing thead/tbody", path)
 			}
+			if path == "/admin/audit" && !strings.Contains(body, `data-label="时间"`) {
+				t.Errorf("%s table cells missing mobile data-label attributes", path)
+			}
 			if path == "/admin/password" && strings.Contains(body, `action="/admin/logout"`) {
 				t.Errorf("%s body contains logout form", path)
 			}
@@ -110,6 +115,14 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		}
 	}
 
+	// 原断言覆盖的 /admin/advanced 与 /admin/advanced/secrets 已删除，改成覆盖新页面：
+	// 除设置页外，登录后的页面都不带退出表单。
+	for _, path := range []string{"/admin/secrets", "/admin/projects", "/admin/projects/ns1/clients/c1", "/admin/secrets/new", "/admin/projects/new", "/admin/projects/ns1/secrets/add", "/admin/projects/ns1/edit", "/admin/projects/ns1/intents/new"} {
+		page := adminPageRequest(s, cookie, http.MethodGet, path, nil).Body.String()
+		if strings.Contains(page, `action="/admin/logout"`) {
+			t.Errorf("%s 不该带退出表单", path)
+		}
+	}
 	setSession(true, true)
 	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/password", nil)
 	passwordHTML := w.Body.String()
