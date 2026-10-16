@@ -153,15 +153,29 @@ func TestLocalSmokeKeygenAdminClientFetchMCP(t *testing.T) {
 	if session == nil {
 		t.Fatal("admin session cookie missing")
 	}
+	// SV-20261016-07 A3：首页已删除，/admin/ 一律 303 到密钥标签；面板 csrf 改从新建密钥页取。
 	req, _ = http.NewRequest("GET", srv.URL+"/admin/", nil)
 	req.AddCookie(session)
 	resp, e = httpClient.Do(req)
 	if e != nil {
 		t.Fatal(e)
 	}
-	dash, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	match = re.FindStringSubmatch(string(dash))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/secrets" {
+		t.Fatalf("admin root should redirect to the secrets tab: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	req, _ = http.NewRequest("GET", srv.URL+"/admin/secrets/new", nil)
+	req.AddCookie(session)
+	resp, e = httpClient.Do(req)
+	if e != nil {
+		t.Fatal(e)
+	}
+	panel, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("new-secret page status=%d", resp.StatusCode)
+	}
+	match = re.FindStringSubmatch(string(panel))
 	if len(match) != 2 {
 		t.Fatal("panel csrf missing")
 	}

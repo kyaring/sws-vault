@@ -52,8 +52,7 @@ func (s *Server) adminNamespaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.adminSession(w, r)
-	if !ok {
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -117,27 +116,11 @@ func (s *Server) adminClients(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", ns, "client-create", "", "", "ok", s.sourceIP(r))
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端已创建</h1><p>令牌只显示这一次。请立即保存到受保护的环境注入中。</p><pre>{{.Token}}</pre><a href="/admin/clients">返回</a></html>`, map[string]string{"Token": token})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>接入方已创建</h1><p>令牌只显示这一次。请立即保存到受保护的环境注入中。</p><pre>{{.Token}}</pre><a href="/admin/projects">返回项目</a></html>`, map[string]string{"Token": token})
 		return
 	}
-	rows, e := s.S.DB.Query(`SELECT id,ns,name,scopes,cidrs,expires_at,disabled FROM clients ORDER BY created_at DESC LIMIT 200`)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	defer rows.Close()
-	type item struct {
-		ID, NS, Name, Scopes, CIDRs, Expires string
-		Disabled                             int
-	}
-	var list []item
-	for rows.Next() {
-		var v item
-		if rows.Scan(&v.ID, &v.NS, &v.Name, &v.Scopes, &v.CIDRs, &v.Expires, &v.Disabled) == nil {
-			list = append(list, v)
-		}
-	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>客户端</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>项目<input name="ns" required></label><label>名称<input name="name" required></label><label>权限范围<input name="scopes" value="secrets:list,fetch" required></label><label>CIDR（可选）<input name="cidrs"></label><label>过期时间 RFC3339（可选）<input name="expires"></label><button class="btn block">创建客户端</button></form><table><tr><th>ID</th><th>项目</th><th>名称</th><th>权限</th><th>停用</th></tr>{{range .Items}}<tr><td>{{.ID}}</td><td>{{.NS}}</td><td>{{.Name}}</td><td>{{.Scopes}}</td><td>{{.Disabled}} <form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></td></tr>{{end}}</table><a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list})
+	// A4：旧的「客户端」列表页删除，浏览时直接去项目标签；创建（POST）保留原处理。
+	http.Redirect(w, r, "/admin/projects", http.StatusSeeOther)
 }
 func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -193,7 +176,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", "", "binding-update", id, "", "ok", s.sourceIP(r))
-		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/secrets/"+id, http.StatusSeeOther)
 		return
 	}
 	var ns, label, providerName, b string
@@ -204,10 +187,57 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	var bd Binding
 	_ = json.Unmarshal([]byte(b), &bd)
 	headers, _ := json.Marshal(bd.Headers)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改使用范围：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"><small class="hint">{{if .NoClientAccess}}当前尚未授权给任何接入方；留空保存会保持这个状态，填入接入方 ID 才放行。{{else}}留空表示项目内所有接入方都能用。{{end}}</small></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP, "NoClientAccess": bd.NoClientAccess})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>修改使用范围</title><h1>修改使用范围：{{.Label}}</h1>`+bindingsFormTemplate+`</html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP, "NoClientAccess": bd.NoClientAccess, "FormAction": "/admin/secrets/" + id + "/bindings"})
 	_ = ns
 	_ = providerName
 }
+
+// auditActionLabel / auditResultLabel 把审计里的英文动作与结果翻成面板上显示的中文（I4）。
+func auditActionLabel(action string) string {
+	if v, ok := auditActionLabels[action]; ok {
+		return v
+	}
+	return action
+}
+
+func auditResultLabel(result string) string {
+	if v, ok := auditResultLabels[result]; ok {
+		return v
+	}
+	return result
+}
+
+var auditActionLabels = map[string]string{
+	"fetch":               "代发",
+	"resolve":             "取明文",
+	"list":                "列表",
+	"write":               "新建密钥",
+	"rotate":              "轮换",
+	"login":               "登录",
+	"logout":              "退出",
+	"client-create":       "新建接入方",
+	"client-disable":      "停用接入方",
+	"client-update":       "修改接入方",
+	"client-regenerate":   "重新生成通行证",
+	"project-create":      "新建项目",
+	"project-description": "改项目简介",
+	"secret-associate":    "放入项目",
+	"secret-disable":      "停用密钥",
+	"binding-update":      "改使用范围",
+	"intent-create":       "生成录入链接",
+	"admin.grant.update":  "改授权",
+	"totp-enrolled":       "两步验证",
+	"password-changed":    "改密码",
+}
+
+var auditResultLabels = map[string]string{
+	"ok":       "成功",
+	"failed":   "失败",
+	"rejected": "被拒绝",
+	"locked":   "已锁定",
+	"denied":   "被拒绝",
+}
+
 func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
@@ -215,11 +245,11 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	ns, actor, from, to := r.URL.Query().Get("ns"), r.URL.Query().Get("actor"), r.URL.Query().Get("from"), r.URL.Query().Get("to")
 	displayNS := ns
-	if ns == "未关联" {
-		ns = "_unassigned"
+	if ns == "未归入项目" {
+		ns = unassignedNS
 	}
-	if ns == "_unassigned" {
-		displayNS = "未关联"
+	if ns == unassignedNS {
+		displayNS = "未归入项目"
 	}
 	where := []string{"1=1"}
 	args := []any{}
@@ -271,9 +301,11 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v item
 		if rows.Scan(&v.At, &v.Actor, &v.NS, &v.ID, &v.Action, &v.Host, &v.Result, &v.IP) == nil {
-			if v.NS == "_unassigned" {
-				v.NS = "未关联"
+			if v.NS == unassignedNS {
+				v.NS = "未归入项目"
 			}
+			v.Action = auditActionLabel(v.Action)
+			v.Result = auditResultLabel(v.Result)
 			list = append(list, v)
 		}
 	}
@@ -301,7 +333,7 @@ func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
 	if page*50 < total {
 		next = mk(page + 1)
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>项目<input name="ns" value="{{.NS}}"></label><label>操作者<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>Actor</th><th>项目</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": displayNS, "Actor": actor, "From": from, "To": to})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>审计事件</h1><form method="get"><label>项目<input name="ns" value="{{.NS}}"></label><label>操作者<input name="actor" value="{{.Actor}}"></label><label>起始时间 RFC3339<input name="from" value="{{.From}}"></label><label>结束时间 RFC3339<input name="to" value="{{.To}}"></label><button>筛选</button></form><p>第 {{.Page}} 页，共 {{.Total}} 条</p><table><tr><th>时间</th><th>操作者</th><th>项目</th><th>ID</th><th>动作</th><th>主机</th><th>结果</th><th>来源 IP</th></tr>{{range .Items}}<tr><td>{{.At}}</td><td>{{.Actor}}</td><td>{{.NS}}</td><td>{{.ID}}</td><td>{{.Action}}</td><td>{{.Host}}</td><td>{{.Result}}</td><td>{{.IP}}</td></tr>{{end}}</table>{{if .Prev}}<a href="{{.Prev}}">上一页</a>{{end}} {{if .Next}}<a href="{{.Next}}">下一页</a>{{end}} <a href="/admin/">返回</a></html>`, map[string]any{"CSRF": sess.csrf, "Items": list, "Page": page, "Total": total, "Prev": prev, "Next": next, "NS": displayNS, "Actor": actor, "From": from, "To": to})
 }
 func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -319,7 +351,7 @@ func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>轮换凭据：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>新值 <input type="password" name="value" autocomplete="off" required></label><label>验证 URL / Gitea base_url <input name="base_url"></label><label>保存前验证 <input type="checkbox" name="verify"></label><button>轮换</button></form></html>`, map[string]string{"CSRF": sess.csrf, "Label": label})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>轮换凭据</title><h1>轮换凭据：{{.Label}}</h1><form method="post" action="/admin/secrets/`+id+`/rotate"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>新值 <input type="password" name="value" autocomplete="off" required></label><label>验证 URL / Gitea base_url <input name="base_url"></label><label>保存前验证 <input type="checkbox" name="verify"></label><button>轮换</button></form></html>`, map[string]string{"CSRF": sess.csrf, "Label": label})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -347,7 +379,7 @@ func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", ns, "rotate", m.ID, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/secrets/"+m.ID, http.StatusSeeOther)
 }
 func (s *Server) adminDisableSecret(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -369,7 +401,7 @@ func (s *Server) adminDisableSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", "", "secret-disable", id, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/secrets/"+id, http.StatusSeeOther)
 }
 func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -380,6 +412,11 @@ func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/clients/"), "/disable")
+	var ns string
+	if e := s.S.DB.QueryRow(`SELECT ns FROM clients WHERE id=?`, id).Scan(&ns); e != nil {
+		adminErrOut(w, 404, "not found")
+		return
+	}
 	res, e := s.S.DB.Exec(`UPDATE clients SET disabled=1 WHERE id=? AND disabled=0`, id)
 	if e != nil {
 		adminErrOut(w, 500, "internal error")
@@ -391,7 +428,7 @@ func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", "", "client-disable", id, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/clients", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/projects/"+ns+"/clients/"+id, http.StatusSeeOther)
 }
 func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
@@ -412,17 +449,6 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 400, "invalid label")
 		return
 	}
-	raw, e := vaultcrypto.Random(32)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	token := vaultcrypto.Encode(raw)
-	for i := range raw {
-		raw[i] = 0
-	}
-	h := sha256.Sum256([]byte(token))
-	now := time.Now().UTC()
 	ns := strings.TrimSpace(r.Form.Get("ns"))
 	if ns == "" {
 		ns = "default"
@@ -435,18 +461,10 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 400, "invalid project")
 		return
 	}
-	_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(h[:16]), ns, now.Format(time.RFC3339))
-	if e == nil {
-		_, e = s.S.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, h[:], ns, label, now.Add(10*time.Minute).Format(time.RFC3339))
-	}
+	link, e := s.createIntent(ns, label)
 	if e != nil {
 		adminErrOut(w, 500, "internal error")
 		return
-	}
-	base := s.C.PublicBaseURL
-	link := "/i/" + token
-	if base != "" {
-		link = base + link
 	}
 	s.audit("admin", ns, "intent-create", "", "", "ok", s.sourceIP(r))
 	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>一次性链接已创建</h1><p>链接有效期 10 分钟，只显示这一次。</p><pre>{{.URL}}</pre><a href="/admin/">返回</a></html>`, map[string]string{"URL": link})
@@ -460,4 +478,62 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// createIntent 生成一次性录入链接（10 分钟有效），返回可展示的完整链接。
+func (s *Server) createIntent(ns, label string) (string, error) {
+	raw, e := vaultcrypto.Random(32)
+	if e != nil {
+		return "", e
+	}
+	token := vaultcrypto.Encode(raw)
+	for i := range raw {
+		raw[i] = 0
+	}
+	h := sha256.Sum256([]byte(token))
+	now := time.Now().UTC()
+	if _, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(h[:16]), ns, now.Format(time.RFC3339)); e != nil {
+		return "", e
+	}
+	if _, e = s.S.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, h[:], ns, label, now.Add(10*time.Minute).Format(time.RFC3339)); e != nil {
+		return "", e
+	}
+	link := "/i/" + token
+	if base := s.C.PublicBaseURL; base != "" {
+		link = base + link
+	}
+	return link, nil
+}
+
+// adminProjectIntentNew 在项目里生成录入链接（E）：项目字段固定为本项目。
+func (s *Server) adminProjectIntentNew(w http.ResponseWriter, r *http.Request, name string) {
+	sess, ok := s.adminSession(w, r)
+	if !ok {
+		return
+	}
+	if !s.projectExists(name) {
+		adminErrOut(w, 404, "not found")
+		return
+	}
+	if r.Method == http.MethodGet {
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>生成录入链接</title><h1>生成录入链接</h1><p class="lead">链接 10 分钟内有效，对方点开就能把密钥填进 {{.Name}}。</p><form method="post" action="/admin/projects/{{.Name}}/intents/new"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>标签 <input name="label" required maxlength="128" autocomplete="off"><small class="hint">给这个密钥起个名字，方便之后认出来。</small></label><button class="btn block">生成录入链接</button></form>`, map[string]any{"CSRF": sess.csrf, "Name": name})
+		return
+	}
+	if r.Method != http.MethodPost {
+		adminErrOut(w, 405, "method not allowed")
+		return
+	}
+	_ = r.ParseForm()
+	label := strings.TrimSpace(r.Form.Get("label"))
+	if label == "" || len(label) > 128 {
+		adminErrOut(w, 400, "invalid label")
+		return
+	}
+	link, e := s.createIntent(name, label)
+	if e != nil {
+		adminErrOut(w, 500, "internal error")
+		return
+	}
+	s.audit("admin", name, "intent-create", "", "", "ok", s.sourceIP(r))
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>录入链接</title><h1>录入链接已生成</h1><p>链接有效期 10 分钟，只显示这一次。</p><pre>{{.URL}}</pre><a href="/admin/projects/{{.Name}}">返回项目</a>`, map[string]string{"URL": link, "Name": name})
 }

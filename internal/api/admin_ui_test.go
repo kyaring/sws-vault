@@ -47,6 +47,8 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		sessions.Unlock()
 	}
 	setSession(false, false)
+	// 审计表要有数据，才能验证手机端卡片用的 data-label（原断言对象是已删除的客户端表）。
+	s.audit("admin", "ns1", "write", "", "", "ok", "127.0.0.1")
 	// Create an intent solely in the isolated test database so intent.go's GET page is covered.
 	intentToken := "ui-test-intent-token"
 	intentHash := sha256.Sum256([]byte(intentToken))
@@ -54,11 +56,12 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 首页和旧「高级 / 所有密钥 / 接入项目」页已由 SV-20261016-07（A3/A4）删除，这里改成遍历新页；
+	// 这些旧地址的 303 落点由 admin_ia_test.go 的 TestAdminLegacyRedirects 逐条断言。
 	paths := []string{
-		"/admin/login", "/admin/", "/admin/secrets/new", "/admin/quick/project",
-		"/admin/quick/project?project=ui-test&client=default", "/admin/advanced", "/admin/advanced/secrets",
-		"/admin/projects", "/admin/projects/new", "/admin/clients", "/admin/audit", "/admin/intents/new",
-		"/admin/secrets/missing/bindings", "/admin/not-a-route", "/i/" + intentToken,
+		"/admin/login", "/admin/secrets", "/admin/settings", "/admin/secrets/new",
+		"/admin/projects", "/admin/projects/new", "/admin/audit", "/admin/intents/new",
+		"/admin/projects/ns1/clients/c1", "/admin/secrets/missing/bindings", "/admin/secrets/missing", "/admin/not-a-route", "/i/" + intentToken,
 	}
 	for _, path := range paths {
 		setSession(false, false)
@@ -71,8 +74,8 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		if w.Code != http.StatusOK && w.Code != http.StatusNotFound {
 			t.Fatalf("%s status=%d body=%s", path, w.Code, w.Body.String())
 		}
-		if path == "/admin/" && (!strings.Contains(w.Body.String(), `<svg`) || !strings.Contains(w.Body.String(), `>新建</b>`) || !strings.Contains(w.Body.String(), `>接入项目</b>`)) {
-			t.Errorf("dashboard action cards missing SVG/copy")
+		if path == "/admin/secrets" && (!strings.Contains(w.Body.String(), `aria-label="新建密钥"`) || !strings.Contains(w.Body.String(), `class="tabbar"`) || !strings.Contains(w.Body.String(), "还没有密钥")) {
+			t.Errorf("密钥标签缺少新建入口 / 标签栏 / 空状态")
 		}
 		if path == "/admin/login" || strings.HasPrefix(path, "/admin/") || path == "/admin/" || strings.HasPrefix(path, "/i/") {
 			if !strings.Contains(w.Body.String(), `name="viewport" content="width=device-width,initial-scale=1"`) || !strings.Contains(w.Body.String(), `/admin/assets/admin.css`) {
@@ -87,22 +90,19 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 					t.Errorf("%s references %s but asset returned %d", path, assetPath, assetResp.Code)
 				}
 			}
-			if (path == "/admin/clients" || path == "/admin/audit") && (!strings.Contains(body, `<thead>`) || !strings.Contains(body, `<tbody>`)) {
+			if path == "/admin/audit" && (!strings.Contains(body, `<thead>`) || !strings.Contains(body, `<tbody>`)) {
 				t.Errorf("%s table missing thead/tbody", path)
 			}
-			if path == "/admin/clients" && !strings.Contains(body, `data-label="ID"`) {
+			if path == "/admin/audit" && !strings.Contains(body, `data-label="时间"`) {
 				t.Errorf("%s table cells missing mobile data-label attributes", path)
 			}
-			if (path == "/admin/password" || path == "/admin/advanced" || path == "/admin/advanced/secrets") && strings.Contains(body, `action="/admin/logout"`) {
+			if path == "/admin/password" && strings.Contains(body, `action="/admin/logout"`) {
 				t.Errorf("%s body contains logout form", path)
 			}
 			if (path == "/admin/clients" || path == "/admin/projects" || path == "/admin/intents/new") && strings.Contains(body, `class="bar"><button class="btn block"`) {
 				t.Errorf("%s advanced action incorrectly uses sticky bar", path)
 			}
-			if path == "/admin/quick/project?project=ui-test&client=default" && (!strings.Contains(body, `class="back" href="/admin/quick/project">‹ 上一步`) || strings.Contains(body, `>返回上一步</a>`) || strings.Contains(body, `>取消</a>`)) {
-				t.Errorf("quick project step 2 navigation not in top bar")
-			}
-			if path == "/admin/secrets/new" && (!strings.Contains(body, "粘贴后立即加密保存") || !strings.Contains(body, "不关联时，任何客户端都无法调用") || !strings.Contains(body, "只会发往这个域名") || !strings.Contains(body, `class="brand-cloudflare"`) || !strings.Contains(body, `>Cloudflare</b>`)) {
+			if path == "/admin/secrets/new" && (!strings.Contains(body, "粘贴后立即加密保存") || !strings.Contains(body, "不选就先放在「未归入项目」，任何接入方都用不了") || !strings.Contains(body, "只会发往这个域名") || !strings.Contains(body, `class="brand-cloudflare"`) || !strings.Contains(body, `>Cloudflare</b>`)) {
 				t.Errorf("new secret page missing design copy/platform tiles")
 			}
 
@@ -115,6 +115,14 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 		}
 	}
 
+	// 原断言覆盖的 /admin/advanced 与 /admin/advanced/secrets 已删除，改成覆盖新页面：
+	// 除设置页外，登录后的页面都不带退出表单。
+	for _, path := range []string{"/admin/secrets", "/admin/projects", "/admin/projects/ns1/clients/c1", "/admin/secrets/new", "/admin/projects/new", "/admin/projects/ns1/secrets/add", "/admin/projects/ns1/edit", "/admin/projects/ns1/intents/new"} {
+		page := adminPageRequest(s, cookie, http.MethodGet, path, nil).Body.String()
+		if strings.Contains(page, `action="/admin/logout"`) {
+			t.Errorf("%s 不该带退出表单", path)
+		}
+	}
 	setSession(true, true)
 	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/password", nil)
 	passwordHTML := w.Body.String()
@@ -147,10 +155,9 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	if strings.Contains(string(css), "a.primary") || !strings.Contains(string(css), ".bar .btn { flex: 1; }") || !strings.Contains(string(css), ".dot {") {
 		t.Fatal("admin.css still contains conflicting a.primary selector")
 	}
-	// Admin HTML errors use the shell; API errors remain JSON.
-	clientHTML := adminPageRequest(s, cookie, http.MethodGet, "/admin/clients", nil).Body.String()
-	if !strings.Contains(clientHTML, `class="btn small danger"`) || strings.Contains(clientHTML, `class="bar"><button class="btn block">创建客户端`) {
-		t.Fatalf("client page missing compact danger action or has sticky create action")
+	// 旧的「客户端」页已由本卡删除（A4），改断言它的 303 落点（等价行为）。
+	if w := adminPageRequest(s, cookie, http.MethodGet, "/admin/clients", nil); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/projects" {
+		t.Fatalf("clients page should redirect to the projects tab: %d %q", w.Code, w.Header().Get("Location"))
 	}
 	w = adminPageRequest(s, cookie, http.MethodGet, "/admin/not-a-route", nil)
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `class="appbar"`) || !strings.Contains(w.Body.String(), "找不到这个页面") || !strings.Contains(w.Body.String(), "<details>") || !strings.Contains(w.Body.String(), "技术详情") {
@@ -172,7 +179,9 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 	}
 }
 
-func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
+// TestSecretsTabStatsAreReadOnlyAndAccurate 原为首页统计测试；首页已由本卡删除（A3），
+// 断言对象改为新的密钥标签与密钥详情页，语义（统计准确 + GET 不改库）保持不变。
+func TestSecretsTabStatsAreReadOnlyAndAccurate(t *testing.T) {
 	s, st, _, _ := testServer(t, "secrets:list,secrets:write,resolve")
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ui-ns2','ui-ns2',?)`, now); err != nil {
@@ -212,10 +221,18 @@ func TestDashboardStatsAreReadOnlyAndAccurate(t *testing.T) {
 		}
 		before[table] = count
 	}
-	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/", nil)
+	var firstID string
+	if err := st.DB.QueryRow(`SELECT id FROM secrets WHERE label='ui-one'`).Scan(&firstID); err != nil {
+		t.Fatal(err)
+	}
+	w := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets", nil)
 	body := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(body, "3 个有效密钥 · 2 个项目") || !strings.Contains(body, "最近一次调用 5 分钟前") || !strings.Contains(body, `class="badge">1</span>`) || !strings.Contains(body, "ui-ns2") || strings.Contains(body, "_x") || strings.Count(body, `class="dot"`) < 5 || !strings.Contains(body, "还没给任何项目，暂不可调用") {
-		t.Fatalf("dashboard stats incorrect: status=%d body=%s", w.Code, body)
+	if w.Code != http.StatusOK || !strings.Contains(body, "未归入项目 · 1") || !strings.Contains(body, "ui-ns2") || strings.Contains(body, "_x") || strings.Count(body, `class="dot`) != 4 || !strings.Contains(body, "还没人能用") {
+		t.Fatalf("密钥标签统计不正确: status=%d body=%s", w.Code, body)
+	}
+	detail := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+firstID, nil).Body.String()
+	if !strings.Contains(detail, "最近使用") || !strings.Contains(detail, "5 分钟前") {
+		t.Fatalf("密钥详情最近使用不正确: %s", detail)
 	}
 	for table, expected := range before {
 		var after int64

@@ -37,7 +37,19 @@ The admin panel is server-rendered HTML under `/admin/`; every write needs the `
 
 | Method and path | Behavior |
 |---|---|
-| `GET /admin/` | Dashboard: secret/project counts and grouped entries |
+| `GET /admin/` | 303 redirect to `/admin/secrets` (the dashboard was removed in SV-07) |
+| `GET /admin/secrets` | Secrets tab: all secrets grouped by project, the unassigned group first, plus a search box once there are more than 20 secrets |
+| `GET /admin/secrets/{id}` | Secret detail: project, last use, who can use it, request limits (the binding editor), rotate/disable |
+| `GET, POST /admin/secrets/{id}/project` | Move a secret into a project (or out to unassigned). Moving out requires `confirm=yes` and clears every authorization |
+| `GET, POST /admin/secrets/{id}/bindings` | Binding editor, also embedded in the detail page under 「请求限制」 |
+| `POST /admin/secrets/{id}/clients` | Overwrites the secret's authorized clients (form field `client`, repeatable). Cross-project ids and unassigned secrets return HTTP 400 |
+| `GET /admin/projects/{name}/secrets/add` | 「放入密钥」: new secret / import an unassigned one / generate an entry link |
+| `GET, POST /admin/projects/{name}/intents/new` | Ten-minute entry link with the project fixed |
+| `GET /admin/projects/{name}/edit` | Edit the project description |
+| `GET, POST /admin/projects/{name}/clients/{id}` | Access-pass detail: note, permission, source CIDR, per-secret switches |
+| `POST /admin/projects/{name}/clients/{id}/secrets` | Overwrites this access pass's secret list (form field `secret`, repeatable); only adds/removes this pass |
+| `POST /admin/projects/{name}/clients/{id}/regenerate` | Issues a new token for the access pass; the old token stops working immediately |
+| `GET /admin/settings` | Settings: change password, two-step verification, log out |
 | `GET /admin/projects` | Project list (name, truncated description, secret and access-pass counts). The reserved unassigned bucket is never listed |
 | `GET, POST /admin/projects/new` | Create a project. `name` is `[A-Za-z0-9._-]{1,64}` and `description` is at most 200 runes; reserved `_`-prefixed names, duplicates, and over-long descriptions return HTTP 400 without creating a row |
 | `GET /admin/projects/{name}` | Project detail: editable description, the project's secrets, and its access passes |
@@ -45,6 +57,9 @@ The admin panel is server-rendered HTML under `/admin/`; every write needs the `
 | `GET, POST /admin/projects/{name}/secrets/import` | Move secrets out of the unassigned bucket into the project. Imported secrets get `allow_resolve=false`, are authorized to no client, and must be selected when an access pass is created |
 | `GET, POST /admin/projects/{name}/clients/new` | Create an access pass. `name` must be unique inside the project, `note` is at most 100 runes, and at least one `secret` must be selected. Scope, `allow_resolve`, and source-CIDR semantics match the one-step quick flow |
 | `GET /admin/namespaces` | 303 redirect to `/admin/projects` |
+| `GET /admin/clients` | 303 redirect to `/admin/projects` (`POST /admin/clients` still creates a client) |
+| `GET /admin/advanced`, `GET /admin/advanced/secrets` | 303 redirect to `/admin/secrets` |
+| `GET /admin/quick/project` | 303 redirect to `/admin/secrets/new` (`POST /admin/quick/project` keeps the one-step flow) |
 | `POST /admin/namespaces` | Legacy project creation, kept for compatibility |
 
 `namespaces.description` and `clients.note` are added by an idempotent additive migration (`PRAGMA table_info` + `ALTER TABLE`); existing rows keep their data and the columns default to the empty string. A client whose secret binding carries `no_client_access=true` is rejected even when `allowed_clients` is empty, which is how imported secrets stay unauthorized until an access pass selects them. Adding an access pass first explicitizes every wide-open binding of the project (`allowed_clients` empty and `no_client_access=false`): it is rewritten to the project's current non-disabled clients, or to `no_client_access=true` when the project has none yet. Only then is the new client appended to the selected secrets, so an unselected secret is never reachable by the new pass and no existing pass loses access. Secrets created from the project detail entry (`/admin/secrets/new?project=…&from=project`) start with `no_client_access=true`.

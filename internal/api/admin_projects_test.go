@@ -323,7 +323,7 @@ func TestProjectPagesHidePlaintextAndDropLegacyChrome(t *testing.T) {
 		"/admin/projects":           adminPageRequest(s, cookie, http.MethodGet, "/admin/projects", nil).Body.String(),
 		"/admin/projects/proj-e":    adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/proj-e", nil).Body.String(),
 		"/admin/projects/e/clients": adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/proj-e/clients/new", nil).Body.String(),
-		"/admin/advanced/secrets":   adminPageRequest(s, cookie, http.MethodGet, "/admin/advanced/secrets", nil).Body.String(),
+		"/admin/secrets":            adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets", nil).Body.String(),
 		"result":                    result.Body.String(),
 	}
 	for name, body := range pages {
@@ -334,17 +334,16 @@ func TestProjectPagesHidePlaintextAndDropLegacyChrome(t *testing.T) {
 	if strings.Contains(result.Body.String(), "export SWSV_TOKEN=") {
 		t.Fatal("result page still prints a token assignment that would land in shell history")
 	}
-	allSecrets := pages["/admin/advanced/secrets"]
+	allSecrets := pages["/admin/secrets"]
 	if strings.Contains(allSecrets, `<a href="/admin/secrets/new">录入凭据</a>`) || strings.Contains(allSecrets, "SWSV Vault 管理面板") {
-		t.Fatal("all-secrets page still shows the legacy underlined link bar")
+		t.Fatal("密钥标签仍带着旧的链接条")
 	}
-	if !strings.Contains(allSecrets, "<details") || !strings.Contains(allSecrets, "<summary>筛选</summary>") {
-		t.Fatal("all-secrets page did not move its filters into a details block")
+	// 旧「所有密钥」页的筛选表单（项目/平台输入框）已随该页删除；密钥标签只在超过 20 个密钥时
+	// 显示搜索框（GET q），由 admin_ia_test.go 的 TestSecretsTabGroupsAndKeyDetail 断言。
+	if strings.Contains(allSecrets, `name="ns"`) || strings.Contains(allSecrets, `action="/admin/advanced/secrets"`) {
+		t.Fatal("密钥标签仍带着旧「所有密钥」的筛选表单")
 	}
-	if strings.Index(allSecrets, `<input name="ns"`) < strings.Index(allSecrets, "<details") {
-		t.Fatal("all-secrets filters are rendered outside the details block")
-	}
-	for _, path := range []string{"/admin/", "/admin/projects", "/admin/projects/new", "/admin/projects/proj-e", "/admin/projects/proj-e/clients/new", "/admin/advanced", "/admin/advanced/secrets", "/admin/clients", "/admin/audit", "/admin/secrets/new"} {
+	for _, path := range []string{"/admin/secrets", "/admin/settings", "/admin/secrets/" + secret.ID, "/admin/projects", "/admin/projects/new", "/admin/projects/proj-e", "/admin/projects/proj-e/clients/new", "/admin/audit", "/admin/secrets/new"} {
 		body := visibleText(adminPageRequest(s, cookie, http.MethodGet, path, nil).Body.String())
 		for _, bad := range []string{"命名空间", "namespace"} {
 			if strings.Contains(body, bad) {

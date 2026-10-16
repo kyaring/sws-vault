@@ -158,7 +158,7 @@ func TestUsernameMaskedInMetadataListPanelAndMCP(t *testing.T) {
 	sessions.Lock()
 	sessions.m["username-session"] = adminSession{csrf: "csrf", created: time.Now(), last: time.Now()}
 	sessions.Unlock()
-	r := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/admin/secrets", nil)
 	r.AddCookie(&http.Cookie{Name: "sws_admin", Value: "username-session"})
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
