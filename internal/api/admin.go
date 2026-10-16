@@ -190,6 +190,14 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		s.adminNewSecret(w, r)
 		return
 	}
+	if r.URL.Path == "/admin/secrets" {
+		s.adminSecrets(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/secrets/") {
+		s.adminSecretDetail(w, r)
+		return
+	}
 	sess, ok := s.adminSession(w, r)
 	if !ok {
 		return

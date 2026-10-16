@@ -193,7 +193,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit("admin", "", "binding-update", id, "", "ok", s.sourceIP(r))
-		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/secrets/"+id, http.StatusSeeOther)
 		return
 	}
 	var ns, label, providerName, b string
@@ -204,7 +204,7 @@ func (s *Server) adminBindings(w http.ResponseWriter, r *http.Request) {
 	var bd Binding
 	_ = json.Unmarshal([]byte(b), &bd)
 	headers, _ := json.Marshal(bd.Headers)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>修改使用范围：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>用户名<input name="username" value="{{.Username}}"></label><label>允许客户端 IDs<input name="allowed_clients" value="{{.AllowedClients}}"><small class="hint">{{if .NoClientAccess}}当前尚未授权给任何接入方；留空保存会保持这个状态，填入接入方 ID 才放行。{{else}}留空表示项目内所有接入方都能用。{{end}}</small></label><label>允许主机<input name="hosts" value="{{.Hosts}}"></label><label>Header 模板 JSON<input name="headers" value="{{.Headers}}"></label><label>允许解析<input type="checkbox" name="allow_resolve" {{if .AllowResolve}}checked{{end}}></label><label>允许私网<input type="checkbox" name="allow_private" {{if .AllowPrivate}}checked{{end}}></label><label>允许 HTTP<input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}></label><button>保存</button></form></html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP, "NoClientAccess": bd.NoClientAccess})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>修改使用范围</title><h1>修改使用范围：{{.Label}}</h1>`+bindingsFormTemplate+`</html>`, map[string]any{"CSRF": sess.csrf, "Label": label, "Hosts": strings.Join(bd.Hosts, ","), "Headers": string(headers), "Username": mask(bd.Username), "AllowedClients": strings.Join(bd.AllowedClients, ","), "AllowResolve": bd.AllowResolve, "AllowPrivate": bd.AllowPrivate, "AllowHTTP": bd.AllowHTTP, "NoClientAccess": bd.NoClientAccess, "FormAction": "/admin/secrets/" + id + "/bindings"})
 	_ = ns
 	_ = providerName
 }
@@ -319,7 +319,7 @@ func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>轮换凭据：{{.Label}}</h1><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>新值 <input type="password" name="value" autocomplete="off" required></label><label>验证 URL / Gitea base_url <input name="base_url"></label><label>保存前验证 <input type="checkbox" name="verify"></label><button>轮换</button></form></html>`, map[string]string{"CSRF": sess.csrf, "Label": label})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><title>轮换凭据</title><h1>轮换凭据：{{.Label}}</h1><form method="post" action="/admin/secrets/`+id+`/rotate"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>新值 <input type="password" name="value" autocomplete="off" required></label><label>验证 URL / Gitea base_url <input name="base_url"></label><label>保存前验证 <input type="checkbox" name="verify"></label><button>轮换</button></form></html>`, map[string]string{"CSRF": sess.csrf, "Label": label})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -347,7 +347,7 @@ func (s *Server) adminRotateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", ns, "rotate", m.ID, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/secrets/"+m.ID, http.StatusSeeOther)
 }
 func (s *Server) adminDisableSecret(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -369,7 +369,7 @@ func (s *Server) adminDisableSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit("admin", "", "secret-disable", id, "", "ok", s.sourceIP(r))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/secrets/"+id, http.StatusSeeOther)
 }
 func (s *Server) adminDisableClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

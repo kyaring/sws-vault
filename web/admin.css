@@ -251,3 +251,13 @@ button.row {
   font: 400 16px/1.5 var(--font);
 }
 button.row .t { flex: 1; text-align: left; font-weight: 500; }
+
+/* —— 密钥标签 / 密钥详情（SV-20261016-07 B、D） —— */
+.dot.warn { background: var(--warn-soft); color: var(--warn); }
+.page-action { display: flex; justify-content: flex-end; margin: 0 0 4px; }
+.page-action a {
+  min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent); font-size: 30px; line-height: 1; text-decoration: none;
+}
+details summary .summary-value { float: right; color: var(--text-2); font-weight: 400; }
+.bar-actions { margin: 14px 0 0; }

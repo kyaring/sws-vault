@@ -32,7 +32,7 @@ func TestAdminTabBarSettingsAndFormPages(t *testing.T) {
 	sessions.Unlock()
 
 	for _, tc := range []struct{ path, href string }{
-		{"/admin/advanced/secrets", "/admin/advanced/secrets"},
+		{"/admin/secrets", "/admin/secrets"},
 		{"/admin/projects", "/admin/projects"},
 		{"/admin/audit", "/admin/audit"},
 	} {
@@ -235,5 +235,125 @@ func TestAdminGrantEndpoints(t *testing.T) {
 	}
 	if containsSentinel(dump, "SWSV-GRANT-SENTINEL") {
 		t.Fatal("审计里出现了密钥值")
+	}
+}
+
+var panelH2RE = regexp.MustCompile(`(?is)<h2>(.*?)</h2>`)
+
+// TestSecretsTabGroupsAndKeyDetail 覆盖卡里测试 3（密钥标签分组与计数）与 D 的密钥详情：
+// 未归入项目组置顶且计数正确、N=0 不出现该组、>20 才显示搜索框、页面不含密钥明文。
+func TestSecretsTabGroupsAndKeyDetail(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "ia-secrets-session", "ia-secrets-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES('ia-zz','zz-project',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('ia-cz','zz-project','zz-client',?, 'secrets:list,fetch', ?)`, []byte("ia-cz"), now); err != nil {
+		t.Fatal(err)
+	}
+	newSecret := func(ns, label string) string {
+		m, err := s.save(SecretRequest{NS: ns, Label: label, Provider: "generic", Type: "token", Value: "SWSV-SECRETS-SENTINEL", Bindings: Binding{Hosts: []string{"example.com"}, NoClientAccess: true}}, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.ID
+	}
+	unassigned := newSecret(unassignedNS, "ia-unassigned-key")
+	inProject := newSecret("zz-project", "ia-project-key")
+	disabled := newSecret("ns1", "ia-disabled-key")
+	if _, err := st.DB.Exec(`UPDATE secrets SET status='revoked' WHERE id=?`, disabled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`UPDATE secrets SET bindings=? WHERE id=?`, `{"hosts":["example.com"],"allowed_clients":["ia-cz"]}`, inProject); err != nil {
+		t.Fatal(err)
+	}
+
+	body := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets", nil).Body.String()
+	groups := []string{}
+	for _, m := range panelH2RE.FindAllStringSubmatch(body, -1) {
+		groups = append(groups, strings.TrimSpace(m[1]))
+	}
+	want := []string{"未归入项目 · 1", "ns1", "zz-project"}
+	if len(groups) != len(want) {
+		t.Fatalf("分组不正确：%v", groups)
+	}
+	for i := range want {
+		if groups[i] != want[i] {
+			t.Fatalf("分组顺序不正确：%v，期望 %v", groups, want)
+		}
+	}
+	for _, needle := range []string{
+		`href="/admin/secrets/` + unassigned + `"`,
+		`href="/admin/secrets/` + inProject + `"`,
+		"通用 · 尾号 ",
+		"还没人能用",
+		"1 个接入方",
+		"已停用",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("密钥标签缺少 %q", needle)
+		}
+	}
+	if strings.Contains(body, `name="q"`) {
+		t.Error("密钥数不超过 20 时不应显示搜索框")
+	}
+	if containsSentinel(body, "SWSV-SECRETS-SENTINEL") {
+		t.Fatal("密钥标签泄漏了密钥值")
+	}
+	// 超过 20 个密钥才显示搜索框；按名称过滤只留下匹配的组。
+	for i := 0; i < 19; i++ {
+		newSecret("ns1", "ia-bulk-"+string(rune('a'+i)))
+	}
+	body = adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets", nil).Body.String()
+	if !strings.Contains(body, `name="q"`) {
+		t.Error("密钥数超过 20 时应显示搜索框")
+	}
+	body = adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets?q=ia-disabled", nil).Body.String()
+	filtered := []string{}
+	for _, m := range panelH2RE.FindAllStringSubmatch(body, -1) {
+		filtered = append(filtered, strings.TrimSpace(m[1]))
+	}
+	if len(filtered) != 1 || filtered[0] != "ns1" {
+		t.Fatalf("过滤后分组不正确：%v", filtered)
+	}
+	if strings.Contains(body, "ia-project-key") {
+		t.Error("过滤后仍出现不匹配的密钥")
+	}
+
+	// 密钥详情（D）：名称、平台 · 尾号 · 指纹前 8 位、项目、谁在用、请求限制。
+	var fingerprint string
+	if err := st.DB.QueryRow(`SELECT fingerprint FROM secrets WHERE id=?`, inProject).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	detail := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+inProject, nil).Body.String()
+	for _, needle := range []string{
+		"ia-project-key", "通用 · 尾号 ", "指纹 " + fingerprint[:8], "zz-project", "谁在用", "zz-client",
+		`action="/admin/secrets/` + inProject + `/bindings"`,
+		`action="/admin/secrets/` + inProject + `/clients"`,
+		`href="/admin/secrets/` + inProject + `/rotate"`,
+		`action="/admin/secrets/` + inProject + `/disable"`,
+		"checked",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Errorf("密钥详情缺少 %q", needle)
+		}
+	}
+	if containsSentinel(detail, "SWSV-SECRETS-SENTINEL") {
+		t.Fatal("密钥详情泄漏了密钥值")
+	}
+	unassignedDetail := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+unassigned, nil).Body.String()
+	if !strings.Contains(unassignedDetail, "未归入项目") || !strings.Contains(unassignedDetail, "任何接入方都用不了") {
+		t.Error("未归入项目的密钥详情没有给出提示")
+	}
+	revokedDetail := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+disabled, nil).Body.String()
+	if !strings.Contains(revokedDetail, "已停用") || strings.Contains(revokedDetail, "/rotate") {
+		t.Error("已停用的密钥详情状态或按钮不正确")
+	}
+	if w := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/ia-no-such-key", nil); w.Code != http.StatusNotFound {
+		t.Errorf("不存在的密钥详情应 404，实际 %d", w.Code)
 	}
 }

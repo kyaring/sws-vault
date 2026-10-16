@@ -19,17 +19,18 @@ const (
 var (
 	panelTitleRE = regexp.MustCompile(`(?is)<title>(.*?)</title>`)
 	panelH1RE    = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
+	// 密钥详情相关的表单页把提交地址写成 /admin/secrets/{id}/…，外壳据此还原上级详情页。
+	panelSecretActionRE = regexp.MustCompile(`action="/admin/secrets/([A-Za-z0-9._-]+)/(?:rotate|bindings|clients)"`)
 )
 
 type panelTab struct {
 	Key, Label, Href, Icon string
 }
 
-// panelTabs 是底部标签栏的三项。密钥标签先指向现有的密钥列表页，
-// 阶段 2 建好 /admin/secrets 之后改指过去（Errata 1：不得先跳到不存在的页面）。
+// panelTabs 是底部标签栏的三项。
 func panelTabs() []panelTab {
 	return []panelTab{
-		{Key: "secrets", Label: "密钥", Href: "/admin/advanced/secrets", Icon: "◆"},
+		{Key: "secrets", Label: "密钥", Href: "/admin/secrets", Icon: "◆"},
 		{Key: "projects", Label: "项目", Href: "/admin/projects", Icon: "▦"},
 		{Key: "audit", Label: "记录", Href: "/admin/audit", Icon: "☰"},
 	}
@@ -56,7 +57,7 @@ func panelPageTitle(src string) string {
 // panelPageKind 按页面 <title> 决定外壳形态，以及该高亮的标签 key（可能为空）。
 func panelPageKind(src string) (string, string) {
 	switch title := panelPageTitle(src); {
-	case title == "所有密钥":
+	case title == "所有密钥" || title == "密钥" || strings.HasPrefix(title, "密钥详情"):
 		return panelKindTab, "secrets"
 	case title == "项目" || strings.HasPrefix(title, "项目详情") || title == "客户端":
 		return panelKindTab, "projects"
@@ -77,8 +78,14 @@ func panelCancelHref(src string) string {
 	switch title := panelPageTitle(src); {
 	case title == "新建项目" || title == "添加接入方" || title == "从未关联移入" || title == "创建一次性录入链接":
 		return "/admin/projects"
-	case title == "新建密钥" || strings.HasPrefix(title, "修改使用范围") || strings.HasPrefix(title, "轮换凭据"):
-		return "/admin/advanced/secrets"
+	case title == "新建密钥":
+		return "/admin/secrets"
+	case strings.HasPrefix(title, "修改使用范围") || strings.HasPrefix(title, "轮换凭据"):
+		// 这两页都从密钥详情进入，取消回该密钥的详情页。
+		if m := panelSecretActionRE.FindStringSubmatch(src); len(m) == 2 {
+			return "/admin/secrets/" + m[1]
+		}
+		return "/admin/secrets"
 	case title == "修改初始密码" || title == "设置双重验证":
 		return "/admin/settings"
 	}
@@ -104,7 +111,7 @@ func panelShell(src string) (string, string) {
 	kind, tab := panelPageKind(src)
 	switch kind {
 	case panelKindForm:
-		header := `<header class="appbar"><a class="back" href="` + panelCancelHref(src) + `">取消</a><span class="spacer"></span><b class="page-title">` + template.HTMLEscapeString(panelTitle(src)) + `</b><span class="spacer"></span></header>`
+		header := `<header class="appbar"><a class="back" href="` + panelCancelHref(src) + `">取消</a><span class="spacer"></span><b class="page-title">` + template.HTMLEscapeString(panelPageTitle(src)) + `</b><span class="spacer"></span></header>`
 		return `<body>` + header + `<main class="page">`, `</main></body>`
 	case panelKindTab:
 		header := `<header class="appbar"><a class="brand" href="/admin/">SWS Vault</a><span class="spacer"></span>`
@@ -113,6 +120,9 @@ func panelShell(src string) (string, string) {
 			// 首页暂时保留顶栏的退出表单（cmd/swsvault 的冒烟测试从这里取 csrf 值），
 			// 首页整页删除在阶段 2，届时随 A3 一起处理。
 			header = `<header class="appbar"><a class="brand" href="/admin/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5l-8-3Zm0 4 4 1.5V11c0 3-1.7 5.4-4 6.8-2.3-1.4-4-3.8-4-6.8V7.5L12 6Z" fill="currentColor"/></svg>SWS Vault</a><span class="spacer"></span><form class="logout-top" method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn plain">退出</button></form>`
+		case strings.HasPrefix(panelPageTitle(src), "密钥详情"):
+			// 详情页左上角固定指向上级页面（A5）。
+			header = `<header class="appbar"><a class="back" href="/admin/secrets">‹ 密钥</a><span class="spacer"></span>`
 		case panelPageTitle(src) == "项目详情":
 			// 详情页左上角固定指向上级页面（A5）。
 			header = `<header class="appbar"><a class="back" href="/admin/projects">‹ 项目</a><span class="spacer"></span>`
