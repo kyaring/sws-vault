@@ -163,6 +163,10 @@ func (s *Server) adminHandler(w http.ResponseWriter, r *http.Request) {
 		s.adminSecretClients(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/admin/secrets/") && strings.HasSuffix(r.URL.Path, "/project") {
+		s.adminSecretProject(w, r)
+		return
+	}
 	if r.URL.Path == "/admin/namespaces" {
 		s.adminNamespaces(w, r)
 		return

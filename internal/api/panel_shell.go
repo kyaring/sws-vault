@@ -20,7 +20,7 @@ var (
 	panelTitleRE = regexp.MustCompile(`(?is)<title>(.*?)</title>`)
 	panelH1RE    = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
 	// 密钥详情相关的表单页把提交地址写成 /admin/secrets/{id}/…，外壳据此还原上级详情页。
-	panelSecretActionRE = regexp.MustCompile(`action="/admin/secrets/([A-Za-z0-9._-]+)/(?:rotate|bindings|clients)"`)
+	panelSecretActionRE = regexp.MustCompile(`action="/admin/secrets/([A-Za-z0-9._-]+)/(?:rotate|bindings|clients|project)"`)
 )
 
 type panelTab struct {
@@ -67,7 +67,8 @@ func panelPageKind(src string) (string, string) {
 		return panelKindTab, ""
 	case title == "新建密钥" || title == "新建项目" || title == "添加接入方" || title == "从未关联移入" ||
 		title == "创建一次性录入链接" || strings.HasPrefix(title, "修改使用范围") ||
-		strings.HasPrefix(title, "轮换凭据") || title == "修改初始密码" || title == "设置双重验证":
+		strings.HasPrefix(title, "轮换凭据") || title == "修改初始密码" || title == "设置双重验证" ||
+		title == "放进项目" || title == "移出项目":
 		return panelKindForm, ""
 	}
 	return "", ""
@@ -80,7 +81,7 @@ func panelCancelHref(src string) string {
 		return "/admin/projects"
 	case title == "新建密钥":
 		return "/admin/secrets"
-	case strings.HasPrefix(title, "修改使用范围") || strings.HasPrefix(title, "轮换凭据"):
+	case strings.HasPrefix(title, "修改使用范围") || strings.HasPrefix(title, "轮换凭据") || title == "放进项目" || title == "移出项目":
 		// 这两页都从密钥详情进入，取消回该密钥的详情页。
 		if m := panelSecretActionRE.FindStringSubmatch(src); len(m) == 2 {
 			return "/admin/secrets/" + m[1]

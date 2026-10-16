@@ -97,7 +97,7 @@ func TestAllPanelHTMLHasNoInlineCodeAndCSPUnchanged(t *testing.T) {
 			if (path == "/admin/clients" || path == "/admin/projects" || path == "/admin/intents/new") && strings.Contains(body, `class="bar"><button class="btn block"`) {
 				t.Errorf("%s advanced action incorrectly uses sticky bar", path)
 			}
-			if path == "/admin/secrets/new" && (!strings.Contains(body, "粘贴后立即加密保存") || !strings.Contains(body, "不关联时，任何客户端都无法调用") || !strings.Contains(body, "只会发往这个域名") || !strings.Contains(body, `class="brand-cloudflare"`) || !strings.Contains(body, `>Cloudflare</b>`)) {
+			if path == "/admin/secrets/new" && (!strings.Contains(body, "粘贴后立即加密保存") || !strings.Contains(body, "不选就先放在「未归入项目」，任何接入方都用不了") || !strings.Contains(body, "只会发往这个域名") || !strings.Contains(body, `class="brand-cloudflare"`) || !strings.Contains(body, `>Cloudflare</b>`)) {
 				t.Errorf("new secret page missing design copy/platform tiles")
 			}
 

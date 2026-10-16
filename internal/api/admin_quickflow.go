@@ -42,6 +42,8 @@ func relativeUseTime(value string) string {
 	return fmt.Sprintf("%d 天前", int(elapsed.Hours()/24))
 }
 
+// adminNewSecret 渲染并处理新建密钥（C，设计稿 ②③）。
+// 使用范围由平台模板自动生成，表单上只出现模板参数（Gitea 地址 / 其他平台的域名与 Header）。
 func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
@@ -50,7 +52,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		preselected := strings.TrimSpace(r.URL.Query().Get("project"))
 		fromProject := r.URL.Query().Get("from") == "project"
-		rows, e := s.S.DB.Query(`SELECT name FROM namespaces WHERE name<>? ORDER BY name`, unassignedNS)
+		rows, e := s.S.DB.Query(`SELECT name FROM namespaces WHERE name<>? AND substr(name,1,1)<>'_' ORDER BY name`, unassignedNS)
 		if e != nil {
 			adminErrOut(w, 500, "internal error")
 			return
@@ -63,7 +65,7 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 				names = append(names, n)
 			}
 		}
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><link rel="stylesheet" href="/admin/assets/admin.css"><h1>新建</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}">{{if .FromProject}}<input type="hidden" name="from" value="project">{{end}}<fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>通用</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label>关联项目（可选） <select name="project"><option value="">暂不关联</option>{{range .Projects}}<option value="{{.}}"{{if eq . $.SelectedProject}} selected{{end}}>{{.}}</option>{{end}}</select><small class="hint">不关联时，任何客户端都无法调用。</small></label><label class="generic-only">允许发往的域名（仅通用平台，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><div class="bar"><button class="btn block">保存</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Projects": names, "SelectedProject": preselected, "FromProject": fromProject})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>新建密钥</title><h1>新建密钥</h1><p class="lead">粘贴后立即加密保存，密钥值不会再次显示。</p><form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}">{{if .FromProject}}<input type="hidden" name="from" value="project">{{end}}<fieldset class="choices"><legend>平台</legend><label class="choice"><input type="radio" name="provider" value="cloudflare-token" checked><span><i class="brand-cloudflare">CF</i><b>Cloudflare</b></span></label><label class="choice"><input type="radio" name="provider" value="github-pat"><span><i class="brand-github">GH</i><b>GitHub</b></span></label><label class="choice"><input type="radio" name="provider" value="gitea-token"><span><i class="brand-gitea">Gt</i><b>Gitea</b></span></label><label class="choice"><input type="radio" name="provider" value="generic"><span><i class="brand-generic">··</i><b>其他</b></span></label></fieldset><label>名称 <input name="label" required maxlength="128" autocomplete="off"></label><label>密钥值 <input type="password" name="value" autocomplete="off" required placeholder="粘贴到这里，保存后不再显示"></label><label class="gitea-only">Gitea 地址（选择 Gitea 时必填，例如 https://git.example.com） <input name="gitea_address" autocomplete="url"><small class="hint">只会发往这个域名。</small></label><label class="gitea-only"><input type="checkbox" name="allow_http">允许 HTTP（仅在明确需要时启用）</label><label class="generic-only">允许发往的域名（选择其他平台时必填，逗号分隔） <input name="hosts" autocomplete="off"></label><label class="generic-only">Header 模板 JSON <input name="headers" autocomplete="off" placeholder="{&quot;Authorization&quot;:&quot;Bearer {v}&quot;}"></label><label>放进项目（可选） <select name="project"><option value="">先放在「未归入项目」</option>{{range .Projects}}<option value="{{.}}"{{if eq . $.SelectedProject}} selected{{end}}>{{.}}</option>{{end}}</select><small class="hint">不选就先放在「未归入项目」，任何接入方都用不了。</small></label><div class="bar"><button class="btn block">保存</button></div></form>`, map[string]any{"CSRF": sess.csrf, "Projects": names, "SelectedProject": preselected, "FromProject": fromProject})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -153,23 +155,23 @@ func (s *Server) adminNewSecret(w http.ResponseWriter, r *http.Request) {
 	s.audit("admin", ns, "write", m.ID, "", "ok", s.sourceIP(r))
 	slog.Info("admin secret stored", "namespace", ns, "secret_id", m.ID, "provider", providerName)
 	w.Header().Set("Cache-Control", "no-store")
-	association := "未关联"
-	scopeNote := "该密钥位于未关联区，项目客户端不能读取；请通过「接入项目」选择目标客户端。"
-	if providerName == "gitea-token" {
-		scopeNote = "允许发往域名：" + strings.Join(hosts, ", ") + "。"
-	}
+	// 成功页（③）：名称 · 平台 · 尾号、所在项目，加「给谁用 →」和「完成」两条路。
+	projectName := "还没放进项目"
+	useHref := "/admin/secrets/" + m.ID + "/project?next=clients"
+	scopeNote := "该密钥还没放进项目，任何接入方都用不了；先「给谁用 →」把它放进一个项目。"
 	if project != "" {
-		association = project
-		if providerName == "gitea-token" {
-			scopeNote += " 该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
-		} else if fromProject {
-			scopeNote = "该密钥尚未授权给任何接入方；请到项目详情页「添加接入方」勾选它，或在使用范围里填入接入方 ID。"
+		projectName = project
+		useHref = "/admin/projects/" + project + "/clients/new?secret=" + m.ID
+		if fromProject {
+			scopeNote = "该密钥尚未授权给任何接入方；「给谁用 →」给它发一张通行证。"
 		} else {
-			scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥。"
+			scopeNote = "该项目内所有具备 resolve 权限的客户端均可使用此密钥；也可以「给谁用 →」发一张专门的通行证。"
 		}
 	}
-	providerLabel := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}[providerName]
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><div class="hero"><span class="seal" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h1>已保存</h1></div><dl><div><dt>名称</dt><dd>{{.Label}}</dd></div><div><dt>平台</dt><dd>{{.Provider}}</dd></div><div><dt>关联状态</dt><dd>{{.Association}}</dd></div>{{if .Hosts}}<div><dt>允许发往</dt><dd>{{.Hosts}}</dd></div>{{end}}</dl><p>使用范围：{{.ScopeNote}}</p><p>密钥值不会再次显示。</p><div class="bar"><div class="bar-actions"><a class="btn secondary" href="/admin/">返回首页</a><a class="btn" href="/admin/quick/project">接入项目</a></div></div>`, map[string]string{"Label": q.Label, "Provider": providerLabel, "Association": association, "ScopeNote": scopeNote, "Hosts": strings.Join(hosts, ", ")})
+	if providerName == "gitea-token" {
+		scopeNote = "允许发往域名：" + strings.Join(hosts, ", ") + "。" + scopeNote
+	}
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>已保存</title><div class="hero"><span class="seal" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h1>已保存</h1></div><p class="lead">{{.Label}} · {{.Provider}} · 尾号 {{.Tail}}<br>放在项目 {{.Project}}</p><p class="hint">{{.ScopeNote}}</p><p class="hint">密钥值不会再次显示。</p><div class="bar-actions"><a class="btn block" href="{{.UseHref}}">给谁用 →</a></div><p class="hint">生成一张通行证，让 AI 或脚本能代发请求。</p><div class="bar-actions"><a class="btn secondary block" href="/admin/secrets/{{.SecretID}}">完成</a></div>`, map[string]string{"Label": q.Label, "Provider": providerLabel(providerName), "Tail": secretTail(m.Preview), "Project": projectName, "ScopeNote": scopeNote, "UseHref": useHref, "SecretID": m.ID})
 }
 
 func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +201,7 @@ func (s *Server) adminQuickProject(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		type item struct{ ID, Label, Project, Provider, Hosts string }
 		var items []item
-		providerNames := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "通用"}
+		providerNames := map[string]string{"cloudflare-token": "Cloudflare", "github-pat": "GitHub", "gitea-token": "Gitea", "generic": "其他"}
 		for rows.Next() {
 			var x item
 			var rawBindings string

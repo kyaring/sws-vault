@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -290,7 +291,7 @@ func TestSecretsTabGroupsAndKeyDetail(t *testing.T) {
 	for _, needle := range []string{
 		`href="/admin/secrets/` + unassigned + `"`,
 		`href="/admin/secrets/` + inProject + `"`,
-		"通用 · 尾号 ",
+		"其他 · 尾号 ",
 		"还没人能用",
 		"1 个接入方",
 		"已停用",
@@ -332,7 +333,7 @@ func TestSecretsTabGroupsAndKeyDetail(t *testing.T) {
 	}
 	detail := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+inProject, nil).Body.String()
 	for _, needle := range []string{
-		"ia-project-key", "通用 · 尾号 ", "指纹 " + fingerprint[:8], "zz-project", "谁在用", "zz-client",
+		"ia-project-key", "其他 · 尾号 ", "指纹 " + fingerprint[:8], "zz-project", "谁在用", "zz-client",
 		`action="/admin/secrets/` + inProject + `/bindings"`,
 		`action="/admin/secrets/` + inProject + `/clients"`,
 		`href="/admin/secrets/` + inProject + `/rotate"`,
@@ -400,5 +401,166 @@ func TestAdminLegacyRedirects(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/secrets" {
 		t.Errorf("登录后应 303 到 /admin/secrets，实际 %d %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// TestNewSecretFlowAndProjectMove 覆盖卡里测试 4（新建 → 给谁用：预选、放进项目后再跳添加接入方）
+// 与 D 的「移到项目…」（含移出二次确认、换项目后仍能取出明文）。
+func TestNewSecretFlowAndProjectMove(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "ia-new-session", "ia-new-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, ns := range []string{"zz-project", "yy-project"} {
+		if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?)`, ns, ns, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moveToken := "swsv_move-client-token"
+	sum := sha256.Sum256([]byte(moveToken))
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at) VALUES('ia-cmove','yy-project','move-client',?, 'secrets:list,resolve,fetch', ?)`, sum[:], now); err != nil {
+		t.Fatal(err)
+	}
+	const sentinel = "SWSV-NEW-SECRET-SENTINEL"
+	readNS := func(id string) string {
+		t.Helper()
+		var ns string
+		if err := st.DB.QueryRow(`SELECT ns FROM secrets WHERE id=?`, id).Scan(&ns); err != nil {
+			t.Fatal(err)
+		}
+		return ns
+	}
+	readBinding := func(id string) Binding {
+		t.Helper()
+		var raw string
+		if err := st.DB.QueryRow(`SELECT bindings FROM secrets WHERE id=?`, id).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var bd Binding
+		if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+			t.Fatal(err)
+		}
+		return bd
+	}
+
+	// ?project= 预选 + C 的提示文案
+	form := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/new?project=zz-project", nil).Body.String()
+	if !strings.Contains(form, `<option value="zz-project" selected>`) || !strings.Contains(form, "不选就先放在「未归入项目」，任何接入方都用不了") {
+		t.Fatalf("新建密钥页未按 ?project= 预选或缺少提示文案")
+	}
+
+	// 建到项目里：成功页给「给谁用 →」和「完成」两条路
+	w := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", url.Values{"csrf": {csrf}, "provider": {"github-pat"}, "label": {"ia-new-in-project"}, "value": {sentinel}, "project": {"zz-project"}})
+	if w.Code != http.StatusOK || containsSentinel(w.Body.String(), sentinel) {
+		t.Fatalf("建密钥失败或回显了密钥值: %d", w.Code)
+	}
+	var inProject string
+	if err := st.DB.QueryRow(`SELECT id FROM secrets WHERE label='ia-new-in-project'`).Scan(&inProject); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"已保存", "ia-new-in-project", "尾号 ", "放在项目 zz-project", "/admin/projects/zz-project/clients/new?secret=" + inProject, `href="/admin/secrets/` + inProject + `">完成</a>`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("成功页缺少 %q", want)
+		}
+	}
+
+	// 未归入项目：成功页的「给谁用 →」先去放进项目
+	w = adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/new", url.Values{"csrf": {csrf}, "provider": {"github-pat"}, "label": {"ia-new-unassigned"}, "value": {sentinel}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("建未归入项目的密钥失败: %d", w.Code)
+	}
+	var loose string
+	if err := st.DB.QueryRow(`SELECT id FROM secrets WHERE label='ia-new-unassigned'`).Scan(&loose); err != nil {
+		t.Fatal(err)
+	}
+	if readNS(loose) != unassignedNS {
+		t.Fatalf("不选项目时应放在未归入项目，实际 %s", readNS(loose))
+	}
+	if !strings.Contains(w.Body.String(), "/admin/secrets/"+loose+"/project?next=clients") {
+		t.Error("未归入项目的成功页没有指向放进项目")
+	}
+
+	// 放进项目页：列出现有项目 + 新建项目；选完把密钥移入并跳到添加接入方
+	picker := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+loose+"/project?next=clients", nil).Body.String()
+	for _, want := range []string{"放进项目", "zz-project", "yy-project", `href="/admin/projects/new"`} {
+		if !strings.Contains(picker, want) {
+			t.Errorf("放进项目页缺少 %q", want)
+		}
+	}
+	if strings.Contains(picker, "移出到「未归入项目」") {
+		t.Error("未归入项目的密钥不该出现「移出到未归入项目」")
+	}
+	moved := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+loose+"/project", url.Values{"csrf": {csrf}, "to": {"zz-project"}, "next": {"clients"}})
+	if moved.Code != http.StatusSeeOther || moved.Header().Get("Location") != "/admin/projects/zz-project/clients/new?secret="+loose {
+		t.Fatalf("放进项目后应跳到添加接入方并预勾该密钥，实际 %d %q", moved.Code, moved.Header().Get("Location"))
+	}
+	if readNS(loose) != "zz-project" {
+		t.Fatalf("密钥没有移入项目：%s", readNS(loose))
+	}
+	if bd := readBinding(loose); !bd.NoClientAccess || len(bd.AllowedClients) != 0 {
+		t.Fatalf("刚放进项目的密钥不应授权给任何人：%+v", bd)
+	}
+
+	// 添加接入方：带 ?secret= 只预勾该密钥；不带参数保持原有默认（全勾）
+	addOne := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/zz-project/clients/new?secret="+loose, nil).Body.String()
+	if strings.Count(addOne, " checked>") != 1 || !strings.Contains(addOne, `value="`+loose+`" checked>`) {
+		t.Errorf("?secret= 预勾不正确")
+	}
+	addAll := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/zz-project/clients/new", nil).Body.String()
+	if strings.Count(addAll, " checked>") != 2 {
+		t.Errorf("不带 ?secret= 时应保持原有默认（全部勾选），实际 %d 个", strings.Count(addAll, " checked>"))
+	}
+
+	// D 的「移到项目…」：移出到未归入项目要二次确认
+	movePage := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/"+inProject+"/project", nil).Body.String()
+	if !strings.Contains(movePage, "移出到「未归入项目」") {
+		t.Error("已在项目里的密钥应能移出到未归入项目")
+	}
+	noConfirm := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+inProject+"/project", url.Values{"csrf": {csrf}, "to": {unassignedNS}})
+	if noConfirm.Code != http.StatusOK || !strings.Contains(noConfirm.Body.String(), "确认移出") {
+		t.Fatalf("移出应先二次确认，实际 %d", noConfirm.Code)
+	}
+	if readNS(inProject) != "zz-project" {
+		t.Fatal("没有二次确认就把密钥移出了")
+	}
+	confirmed := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+inProject+"/project", url.Values{"csrf": {csrf}, "to": {unassignedNS}, "confirm": {"yes"}})
+	if confirmed.Code != http.StatusSeeOther || confirmed.Header().Get("Location") != "/admin/secrets/"+inProject {
+		t.Fatalf("确认移出后应回密钥详情，实际 %d %q", confirmed.Code, confirmed.Header().Get("Location"))
+	}
+	if readNS(inProject) != unassignedNS {
+		t.Fatalf("确认后仍未移出：%s", readNS(inProject))
+	}
+	if bd := readBinding(inProject); !bd.NoClientAccess || len(bd.AllowedClients) != 0 {
+		t.Fatalf("移出时应同时撤掉所有接入方的授权：%+v", bd)
+	}
+
+	// 换到另一个项目后仍能取出明文（证明按新项目重新加密正确）
+	if _, err := st.DB.Exec(`UPDATE secrets SET bindings=? WHERE id=?`, `{"hosts":["api.github.com"],"allow_resolve":true}`, inProject); err != nil {
+		t.Fatal(err)
+	}
+	move2 := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+inProject+"/project", url.Values{"csrf": {csrf}, "to": {"yy-project"}})
+	if move2.Code != http.StatusSeeOther {
+		t.Fatalf("换项目失败：%d %s", move2.Code, move2.Body.String())
+	}
+	if readNS(inProject) != "yy-project" {
+		t.Fatalf("换项目后 ns 不对：%s", readNS(inProject))
+	}
+	grant := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+inProject+"/bindings", url.Values{"csrf": {csrf}, "hosts": {"api.github.com"}, "allowed_clients": {"ia-cmove"}, "allow_resolve": {"on"}})
+	if grant.Code != http.StatusSeeOther {
+		t.Fatalf("授权失败：%d", grant.Code)
+	}
+	code, out := request(t, s, moveToken, http.MethodPost, "/v1/resolve", `{"secret":"vault:yy-project/`+inProject+`"}`)
+	if code != http.StatusOK || !strings.Contains(out, sentinel) {
+		t.Fatalf("换项目后取不出明文（重加密有误）：%d %s", code, out)
+	}
+
+	// 目标项目不存在 → 400；密钥不存在 → 404
+	if bad := adminPageRequest(s, cookie, http.MethodPost, "/admin/secrets/"+inProject+"/project", url.Values{"csrf": {csrf}, "to": {"no-such-project"}}); bad.Code != http.StatusBadRequest {
+		t.Errorf("不存在的项目应 400，实际 %d", bad.Code)
+	}
+	if missing := adminPageRequest(s, cookie, http.MethodGet, "/admin/secrets/ia-no-such-key/project", nil); missing.Code != http.StatusNotFound {
+		t.Errorf("不存在的密钥应 404，实际 %d", missing.Code)
 	}
 }
