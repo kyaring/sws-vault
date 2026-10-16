@@ -89,7 +89,7 @@ func (s *Server) adminProjects(w http.ResponseWriter, r *http.Request) {
 			list = append(list, v)
 		}
 	}
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目</title><h1>项目</h1><p class="lead">一个项目放一组密钥，再给每个使用方发一张通行证。</p>{{if .Items}}<div class="group">{{range .Items}}<a class="row" href="/admin/projects/{{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{if .Description}}{{.Description}}{{else}}还没有简介{{end}}</small></span><span class="v">{{.Secrets}} 密钥 · {{.Clients}} 接入方</span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择下面的「新建项目」开始。</p>{{end}}<div class="bar"><a class="btn block" href="/admin/projects/new">新建项目</a></div>`, map[string]any{"Items": list})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目</title><h1>项目</h1><p class="lead">一个项目放一组密钥，再给每个使用方发一张通行证。</p><p class="page-action"><a href="/admin/projects/new" aria-label="新建项目">＋</a></p>{{if .Items}}<div class="group">{{range .Items}}<a class="row" href="/admin/projects/{{.Name}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7 12 3l9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span class="t">{{.Name}}<small>{{if .Description}}{{.Description}}{{else}}还没有简介{{end}}</small></span><span class="v">{{.Secrets}} 密钥 · {{.Clients}} 接入方</span></a>{{end}}</div>{{else}}<p class="hint">还没有项目。选择右上角的「＋」新建一个。</p>{{end}}`, map[string]any{"Items": list})
 }
 
 // adminProjectNew 处理新建项目。
@@ -156,8 +156,14 @@ func (s *Server) adminProjectRoute(w http.ResponseWriter, r *http.Request) {
 		s.adminProjectDescription(w, r, name)
 	case "clients/new":
 		s.adminProjectClientNew(w, r, name)
+	case "secrets/add":
+		s.adminProjectSecretsAdd(w, r, name)
 	case "secrets/import":
 		s.adminProjectSecretsImport(w, r, name)
+	case "edit":
+		s.adminProjectEdit(w, r, name)
+	case "intents/new":
+		s.adminProjectIntentNew(w, r, name)
 	default:
 		if rest, ok := strings.CutPrefix(suffix, "clients/"); ok {
 			clientID, sub, hasSub := strings.Cut(rest, "/")
@@ -185,8 +191,69 @@ func (s *Server) projectExists(name string) bool {
 	return s.S.DB.QueryRow(`SELECT count(*) FROM namespaces WHERE name=? AND substr(name,1,1)<>'_'`, name).Scan(&n) == nil && n == 1
 }
 
-// adminProjectDetail 渲染项目详情：简介、密钥、接入方。
+// adminProjectDetail 渲染项目详情（E，设计稿 ④）：简介、密钥组（末行「放入密钥」）、接入方组。
 func (s *Server) adminProjectDetail(w http.ResponseWriter, r *http.Request, name string) {
+	if _, ok := s.adminSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		adminErrOut(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var description string
+	if e := s.S.DB.QueryRow(`SELECT description FROM namespaces WHERE name=?`, name).Scan(&description); e != nil {
+		adminErrOut(w, http.StatusNotFound, "not found")
+		return
+	}
+	type secretRow struct {
+		ID, Label, Provider, Tail string
+		Disabled                  bool
+	}
+	var secrets []secretRow
+	rows, e := s.S.DB.Query(`SELECT id,label,provider,preview,status FROM secrets WHERE ns=? ORDER BY label`, name)
+	if e != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	for rows.Next() {
+		var v secretRow
+		var preview, status string
+		if rows.Scan(&v.ID, &v.Label, &v.Provider, &preview, &status) == nil {
+			v.Provider = providerLabel(v.Provider)
+			v.Tail = secretTail(preview)
+			v.Disabled = status != "active"
+			secrets = append(secrets, v)
+		}
+	}
+	rows.Close()
+	type clientRow struct{ ID, Name, Permission, SourceIP, Status string }
+	var clients []clientRow
+	crows, e := s.S.DB.Query(`SELECT id,name,scopes,cidrs,disabled FROM clients WHERE ns=? ORDER BY created_at`, name)
+	if e != nil {
+		adminErrOut(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	for crows.Next() {
+		var v clientRow
+		var scopes, cidrs string
+		var disabled int
+		if crows.Scan(&v.ID, &v.Name, &scopes, &cidrs, &disabled) == nil {
+			v.Permission = clientPermission(scopes)
+			v.SourceIP = clientSourceIP(cidrs)
+			if disabled != 0 {
+				v.Status = "已停用"
+			} else {
+				v.Status = "正常"
+			}
+			clients = append(clients, v)
+		}
+	}
+	crows.Close()
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目详情</title><h1>{{.Name}}</h1><p class="lead">{{if .Description}}{{.Description}}{{else}}还没有简介。{{end}}</p><h2>密钥</h2><div class="group">{{range .Secrets}}<a class="row" href="/admin/secrets/{{.ID}}">`+secretKeyIcon+`<span class="t">{{.Label}}<small>{{.Provider}} · 尾号 {{.Tail}}{{if .Disabled}} · 已停用{{end}}</small></span></a>{{end}}<a class="row accent" href="/admin/projects/{{.Name}}/secrets/add"><span class="dot" aria-hidden="true">＋</span><span class="t">放入密钥<small>新建，或从未归入项目里选</small></span></a></div><h2>接入方</h2>{{if .Clients}}<div class="group">{{range .Clients}}<a class="row" href="/admin/projects/{{$.Name}}/clients/{{.ID}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">{{.Name}}<small>{{.Permission}} · 来源 IP {{.SourceIP}} · {{.Status}}</small></span></a>{{end}}</div>{{else}}<p class="hint">还没有接入方。选择下面的「添加接入方」给使用方发一张通行证。</p>{{end}}<div class="bar"><a class="btn block" href="/admin/projects/{{.Name}}/clients/new">添加接入方</a></div>`, map[string]any{"Name": name, "Description": description, "Secrets": secrets, "Clients": clients})
+}
+
+// adminProjectEdit 编辑项目简介（E：设计稿 ④ 顶栏「编辑」）。
+func (s *Server) adminProjectEdit(w http.ResponseWriter, r *http.Request, name string) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
 		return
@@ -200,58 +267,23 @@ func (s *Server) adminProjectDetail(w http.ResponseWriter, r *http.Request, name
 		adminErrOut(w, http.StatusNotFound, "not found")
 		return
 	}
-	type secretRow struct{ ID, Label, Provider, Status, LastUsed string }
-	var secrets []secretRow
-	rows, e := s.S.DB.Query(`SELECT id,label,provider,status,last_used_at FROM secrets WHERE ns=? ORDER BY created_at DESC`, name)
-	if e != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>编辑项目</title><h1>编辑项目</h1><p class="lead">写清楚这个项目里的密钥是干什么用的。</p><form method="post" action="/admin/projects/`+name+`/description"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>简介 <textarea name="description" rows="3" maxlength="200">{{.Description}}</textarea><small class="hint">最多 200 字；这里只写说明，不要写密钥值。</small></label><button class="btn block">保存</button></form>`, map[string]any{"CSRF": sess.csrf, "Description": description})
+}
+
+// adminProjectSecretsAdd 是「放入密钥」小页面（E）：新建密钥 / 从未归入项目里选 / 生成录入链接。
+func (s *Server) adminProjectSecretsAdd(w http.ResponseWriter, r *http.Request, name string) {
+	if _, ok := s.adminSession(w, r); !ok {
 		return
 	}
-	for rows.Next() {
-		var v secretRow
-		if rows.Scan(&v.ID, &v.Label, &v.Provider, &v.Status, &v.LastUsed) == nil {
-			v.Provider = providerLabel(v.Provider)
-			if v.Status == "active" {
-				v.Status = "有效"
-			} else {
-				v.Status = "已停用"
-			}
-			if v.LastUsed == "" {
-				v.LastUsed = "从未使用"
-			} else {
-				v.LastUsed = relativeUseTime(v.LastUsed)
-			}
-			secrets = append(secrets, v)
-		}
-	}
-	rows.Close()
-	type clientRow struct{ ID, Name, Note, Permission, SourceIP, Status, Created string }
-	var clients []clientRow
-	crows, e := s.S.DB.Query(`SELECT id,name,note,scopes,cidrs,disabled,created_at FROM clients WHERE ns=? ORDER BY created_at DESC`, name)
-	if e != nil {
-		adminErrOut(w, http.StatusInternalServerError, "internal error")
+	if r.Method != http.MethodGet {
+		adminErrOut(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	for crows.Next() {
-		var v clientRow
-		var scopes, cidrs string
-		var disabled int
-		if crows.Scan(&v.ID, &v.Name, &v.Note, &scopes, &cidrs, &disabled, &v.Created) == nil {
-			v.Permission = clientPermission(scopes)
-			v.SourceIP = clientSourceIP(cidrs)
-			if disabled != 0 {
-				v.Status = "已停用"
-			} else {
-				v.Status = "正常"
-			}
-			v.Created = relativeUseTime(v.Created)
-			clients = append(clients, v)
-		}
+	if !s.projectExists(name) {
+		adminErrOut(w, http.StatusNotFound, "not found")
+		return
 	}
-	crows.Close()
-	var unassignedCount int
-	_ = s.S.DB.QueryRow(`SELECT count(*) FROM secrets WHERE ns=? AND status='active'`, unassignedNS).Scan(&unassignedCount)
-	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>项目详情</title><h1>{{.Name}}</h1><p class="lead">{{if .Description}}{{.Description}}{{else}}还没有简介。{{end}}</p><form method="post" action="/admin/projects/{{.Name}}/description"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>简介 <textarea name="description" rows="3" maxlength="200">{{.Description}}</textarea><small class="hint">最多 200 字。这里只写说明，不要写密钥值。</small></label><button class="btn secondary">保存简介</button></form><h2>密钥</h2>{{if .Secrets}}<div class="group">{{range .Secrets}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span><span class="t">{{.Label}}<small>{{.Provider}} · {{.Status}} · {{.LastUsed}}</small></span><a href="/admin/secrets/{{.ID}}/bindings">使用范围</a></div>{{end}}</div>{{else}}<p class="hint">这个项目还没有密钥。</p>{{end}}<div class="group"><a class="row" href="/admin/secrets/new?project={{.Name}}&from=project"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="t">新建密钥<small>新建后直接属于本项目</small></span></a><a class="row" href="{{.ImportURL}}"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="t">从未关联移入<small>未关联区现有 {{.Unassigned}} 个密钥</small></span></a></div><h2>接入方</h2>{{if .Clients}}<div class="group">{{range .Clients}}<div class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span><span class="t">{{.Name}}<small>{{if .Note}}{{.Note}} · {{end}}{{.Permission}} · 来源 IP {{.SourceIP}} · {{.Status}} · {{.Created}}</small></span><form method="post" action="/admin/clients/{{.ID}}/disable" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn small danger">停用</button></form></div>{{end}}</div>{{else}}<p class="hint">还没有接入方。选择下面的「添加接入方」给使用方发一张通行证。</p>{{end}}<div class="bar"><a class="btn block" href="/admin/projects/{{.Name}}/clients/new">添加接入方</a></div>`, map[string]any{"CSRF": sess.csrf, "Name": name, "Description": description, "Secrets": secrets, "Clients": clients, "Unassigned": unassignedCount, "ImportURL": projectSecretsURL(name)})
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>放入密钥</title><h1>放入密钥</h1><p class="lead">放进 {{.Name}} 之后，还要在「添加接入方」里勾选它，接入方才能用。</p><div class="group"><a class="row" href="/admin/secrets/new?project={{.Name}}&from=project"><span class="dot" aria-hidden="true">＋</span><span class="t">新建密钥<small>新建后直接属于本项目，默认不授权给任何接入方</small></span></a><a class="row" href="/admin/projects/{{.Name}}/secrets/import"><span class="dot" aria-hidden="true">↓</span><span class="t">从未归入项目里选<small>把还没归入项目的密钥移进来</small></span></a><a class="row" href="/admin/projects/{{.Name}}/intents/new"><span class="dot" aria-hidden="true">✎</span><span class="t">生成录入链接<small>10 分钟内有效，让对方自己把密钥填进来</small></span></a></div>`, map[string]any{"Name": name})
 }
 
 // adminProjectDescription 保存项目简介。
@@ -282,7 +314,7 @@ func (s *Server) adminProjectDescription(w http.ResponseWriter, r *http.Request,
 	http.Redirect(w, r, "/admin/projects/"+name, http.StatusSeeOther)
 }
 
-// adminProjectSecretsImport 把「未关联」的密钥移入本项目。
+// adminProjectSecretsImport 把「未归入项目」的密钥移入本项目（E）。
 func (s *Server) adminProjectSecretsImport(w http.ResponseWriter, r *http.Request, name string) {
 	sess, ok := s.adminSession(w, r)
 	if !ok {
@@ -312,7 +344,7 @@ func (s *Server) adminProjectSecretsImport(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		rows.Close()
-		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>从未关联移入</title><h1>从未关联移入</h1><p class="lead">移入 {{.Name}} 的密钥默认不授权给任何接入方，也不允许取明文；之后在「添加接入方」里勾选才会放行。</p>{{if .Items}}<form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><div class="group">{{range .Items}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span class="t">{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div><div class="bar"><button class="btn block">移入本项目</button></div></form>{{else}}<p class="hint">未关联区没有可移入的密钥。</p>{{end}}`, map[string]any{"CSRF": sess.csrf, "Name": name, "Items": list})
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>从未归入项目里选</title><h1>从未归入项目里选</h1><p class="lead">移入 {{.Name}} 的密钥默认不授权给任何接入方，也不允许取明文；之后在「添加接入方」里勾选才会放行。</p>{{if .Items}}<form method="post" action="/admin/projects/{{.Name}}/secrets/import"><input type="hidden" name="csrf" value="{{.CSRF}}"><div class="group">{{range .Items}}<label class="check"><input type="checkbox" name="secret" value="{{.ID}}"><span class="t">{{.Label}}<small>{{.Provider}}{{if .Hosts}} · {{.Hosts}}{{end}}</small></span></label>{{end}}</div><div class="bar"><button class="btn block">移入本项目</button></div></form>{{else}}<p class="hint">还没有未归入项目的密钥可以移入。</p>{{end}}`, map[string]any{"CSRF": sess.csrf, "Name": name, "Items": list})
 		return
 	}
 	if r.Method != http.MethodPost {

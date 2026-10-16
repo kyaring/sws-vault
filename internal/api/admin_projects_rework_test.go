@@ -241,7 +241,9 @@ func TestReworkPageLows(t *testing.T) {
 	if isoStampRE.MatchString(detail) {
 		t.Fatalf("L2: detail page still prints a raw ISO timestamp")
 	}
-	if !strings.Contains(detail, "from=project") {
+	// C：项目里的新建密钥入口要带 from=project；该入口由本卡 E 移到「放入密钥」小页面。
+	addPage := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/proj-l/secrets/add", nil).Body.String()
+	if !strings.Contains(addPage, "from=project") {
 		t.Fatal("C: the project detail entry must be marked so new secrets start unauthorized")
 	}
 	res := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/proj-l/clients/new", url.Values{

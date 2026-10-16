@@ -714,3 +714,109 @@ func TestClientDetailPermissions(t *testing.T) {
 		t.Fatalf("接入方没有停用：%v %d", err, flag)
 	}
 }
+
+// TestProjectTabAndSecretEntryPoints 覆盖 E：项目列表右上角「＋」、项目详情两组与「放入密钥」，
+// 以及放入密钥的三条入口（新建密钥带 from=project / 从未归入项目里选 / 生成录入链接）。
+func TestProjectTabAndSecretEntryPoints(t *testing.T) {
+	s, st, _, _ := testServer(t, "secrets:list")
+	cookie, csrf := "ia-proj-session", "ia-proj-csrf"
+	sessions.Lock()
+	sessions.m[cookie] = adminSession{csrf: csrf, created: time.Now(), last: time.Now()}
+	sessions.Unlock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.DB.Exec(`INSERT INTO namespaces(id,name,created_at,description) VALUES('ia-ns','ia-proj',?,'给博客用的 DNS 令牌')`, now); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.save(SecretRequest{NS: "ia-proj", Label: "博客 DNS 令牌", Provider: "cloudflare-token", Type: "token", Value: "SWSV-PROJ-SENTINEL", Bindings: Binding{Hosts: []string{"api.cloudflare.com"}, NoClientAccess: true}}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO clients(id,ns,name,token_hash,scopes,created_at,note) VALUES('ia-pc','ia-proj','blog-worker',?, 'secrets:list,fetch', ?, 'Hark 的博客')`, []byte("ia-pc"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	list := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects", nil).Body.String()
+	for _, want := range []string{`aria-label="新建项目"`, "ia-proj", "1 密钥 · 1 接入方", `class="tabbar"`} {
+		if !strings.Contains(list, want) {
+			t.Errorf("项目列表缺少 %q", want)
+		}
+	}
+	if strings.Contains(list, `class="bar"`) {
+		t.Error("项目列表不该再用吸底按钮")
+	}
+
+	detail := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-proj", nil).Body.String()
+	for _, want := range []string{
+		"给博客用的 DNS 令牌",
+		`href="/admin/secrets/` + m.ID + `"`,
+		`href="/admin/projects/ia-proj/secrets/add"`,
+		"放入密钥",
+		`href="/admin/projects/ia-proj/clients/ia-pc"`,
+		"仅代发 · 来源 IP 不限 · 正常",
+		`href="/admin/projects/ia-proj/clients/new">添加接入方</a>`,
+		`href="/admin/projects/ia-proj/edit">编辑</a>`,
+		`‹ 项目`,
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("项目详情缺少 %q", want)
+		}
+	}
+	if strings.Contains(detail, "/admin/clients/ia-pc/disable") {
+		t.Error("项目详情不该在接入方行上放停用按钮")
+	}
+
+	add := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-proj/secrets/add", nil).Body.String()
+	for _, want := range []string{"放入密钥", "/admin/secrets/new?project=ia-proj&from=project", "/admin/projects/ia-proj/secrets/import", "/admin/projects/ia-proj/intents/new"} {
+		if !strings.Contains(add, want) {
+			t.Errorf("放入密钥页缺少 %q", want)
+		}
+	}
+	imp := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-proj/secrets/import", nil).Body.String()
+	if !strings.Contains(imp, "从未归入项目里选") || strings.Contains(imp, "未关联") {
+		t.Errorf("移入页标题/文案不对：%s", imp[:120])
+	}
+
+	// 生成录入链接：项目固定，结果页叫「录入链接」，库里 10 分钟有效。
+	form := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-proj/intents/new", nil).Body.String()
+	if !strings.Contains(form, "生成录入链接") || strings.Contains(form, `name="ns"`) {
+		t.Error("项目内生成录入链接不该再让用户选项目")
+	}
+	res := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-proj/intents/new", url.Values{"csrf": {csrf}, "label": {"ia-intent"}})
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "录入链接") || !strings.Contains(res.Body.String(), "/i/") {
+		t.Fatalf("生成录入链接失败：%d %s", res.Code, res.Body.String())
+	}
+	var intentNS, expires string
+	if err := st.DB.QueryRow(`SELECT ns,expires_at FROM intents WHERE label='ia-intent'`).Scan(&intentNS, &expires); err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := time.Parse(time.RFC3339, expires)
+	if err != nil || intentNS != "ia-proj" || time.Until(deadline) > 11*time.Minute {
+		t.Fatalf("录入链接参数不对：ns=%q expires=%q err=%v", intentNS, expires, err)
+	}
+
+	// 编辑项目简介
+	edit := adminPageRequest(s, cookie, http.MethodGet, "/admin/projects/ia-proj/edit", nil).Body.String()
+	if !strings.Contains(edit, "给博客用的 DNS 令牌") || !strings.Contains(edit, "编辑项目") {
+		t.Error("编辑项目页没有带出原简介")
+	}
+	if w := adminPageRequest(s, cookie, http.MethodPost, "/admin/projects/ia-proj/description", url.Values{"csrf": {csrf}, "description": {"改过的简介"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("保存简介失败：%d", w.Code)
+	}
+	var description string
+	if err := st.DB.QueryRow(`SELECT description FROM namespaces WHERE name='ia-proj'`).Scan(&description); err != nil || description != "改过的简介" {
+		t.Fatalf("简介没有保存：%q %v", description, err)
+	}
+
+	// 术语：本卡新页面不得出现禁用词
+	for _, page := range []string{list, detail, add, imp, edit} {
+		visible := regexp.MustCompile(`(?is)<[^>]*>`).ReplaceAllString(page, " ")
+		for _, bad := range []string{"未关联", "客户端", "命名空间", "接入项目", "高级"} {
+			if strings.Contains(visible, bad) {
+				t.Errorf("项目页出现禁用词 %q", bad)
+			}
+		}
+	}
+	if containsSentinel(detail, "SWSV-PROJ-SENTINEL") || containsSentinel(add, "SWSV-PROJ-SENTINEL") {
+		t.Fatal("项目页泄漏了密钥值")
+	}
+}

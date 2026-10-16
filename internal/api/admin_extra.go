@@ -400,17 +400,6 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 400, "invalid label")
 		return
 	}
-	raw, e := vaultcrypto.Random(32)
-	if e != nil {
-		adminErrOut(w, 500, "internal error")
-		return
-	}
-	token := vaultcrypto.Encode(raw)
-	for i := range raw {
-		raw[i] = 0
-	}
-	h := sha256.Sum256([]byte(token))
-	now := time.Now().UTC()
 	ns := strings.TrimSpace(r.Form.Get("ns"))
 	if ns == "" {
 		ns = "default"
@@ -423,18 +412,10 @@ func (s *Server) adminIntentNew(w http.ResponseWriter, r *http.Request) {
 		adminErrOut(w, 400, "invalid project")
 		return
 	}
-	_, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(h[:16]), ns, now.Format(time.RFC3339))
-	if e == nil {
-		_, e = s.S.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, h[:], ns, label, now.Add(10*time.Minute).Format(time.RFC3339))
-	}
+	link, e := s.createIntent(ns, label)
 	if e != nil {
 		adminErrOut(w, 500, "internal error")
 		return
-	}
-	base := s.C.PublicBaseURL
-	link := "/i/" + token
-	if base != "" {
-		link = base + link
 	}
 	s.audit("admin", ns, "intent-create", "", "", "ok", s.sourceIP(r))
 	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><h1>一次性链接已创建</h1><p>链接有效期 10 分钟，只显示这一次。</p><pre>{{.URL}}</pre><a href="/admin/">返回</a></html>`, map[string]string{"URL": link})
@@ -448,4 +429,62 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// createIntent 生成一次性录入链接（10 分钟有效），返回可展示的完整链接。
+func (s *Server) createIntent(ns, label string) (string, error) {
+	raw, e := vaultcrypto.Random(32)
+	if e != nil {
+		return "", e
+	}
+	token := vaultcrypto.Encode(raw)
+	for i := range raw {
+		raw[i] = 0
+	}
+	h := sha256.Sum256([]byte(token))
+	now := time.Now().UTC()
+	if _, e = s.S.DB.Exec(`INSERT INTO namespaces(id,name,created_at) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING`, hex.EncodeToString(h[:16]), ns, now.Format(time.RFC3339)); e != nil {
+		return "", e
+	}
+	if _, e = s.S.DB.Exec(`INSERT INTO intents(token_hash,ns,label,expires_at) VALUES(?,?,?,?)`, h[:], ns, label, now.Add(10*time.Minute).Format(time.RFC3339)); e != nil {
+		return "", e
+	}
+	link := "/i/" + token
+	if base := s.C.PublicBaseURL; base != "" {
+		link = base + link
+	}
+	return link, nil
+}
+
+// adminProjectIntentNew 在项目里生成录入链接（E）：项目字段固定为本项目。
+func (s *Server) adminProjectIntentNew(w http.ResponseWriter, r *http.Request, name string) {
+	sess, ok := s.adminSession(w, r)
+	if !ok {
+		return
+	}
+	if !s.projectExists(name) {
+		adminErrOut(w, 404, "not found")
+		return
+	}
+	if r.Method == http.MethodGet {
+		render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>生成录入链接</title><h1>生成录入链接</h1><p class="lead">链接 10 分钟内有效，对方点开就能把密钥填进 {{.Name}}。</p><form method="post" action="/admin/projects/{{.Name}}/intents/new"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>标签 <input name="label" required maxlength="128" autocomplete="off"><small class="hint">给这个密钥起个名字，方便之后认出来。</small></label><button class="btn block">生成录入链接</button></form>`, map[string]any{"CSRF": sess.csrf, "Name": name})
+		return
+	}
+	if r.Method != http.MethodPost {
+		adminErrOut(w, 405, "method not allowed")
+		return
+	}
+	_ = r.ParseForm()
+	label := strings.TrimSpace(r.Form.Get("label"))
+	if label == "" || len(label) > 128 {
+		adminErrOut(w, 400, "invalid label")
+		return
+	}
+	link, e := s.createIntent(name, label)
+	if e != nil {
+		adminErrOut(w, 500, "internal error")
+		return
+	}
+	s.audit("admin", name, "intent-create", "", "", "ok", s.sourceIP(r))
+	render(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>录入链接</title><h1>录入链接已生成</h1><p>链接有效期 10 分钟，只显示这一次。</p><pre>{{.URL}}</pre><a href="/admin/projects/{{.Name}}">返回项目</a>`, map[string]string{"URL": link, "Name": name})
 }
